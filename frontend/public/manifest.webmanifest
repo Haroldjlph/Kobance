@@ -1,0 +1,19 @@
+{
+  "name": "Kobance",
+  "short_name": "Kobance",
+  "description": "Votre compta, sans prise de tête.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f7faf8",
+  "theme_color": "#0f766e",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

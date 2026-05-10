@@ -1,0 +1,24 @@
+{
+  "name": "comptasimple",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Application web de comptabilite simple pour TPE.",
+  "prisma": {
+    "schema": "backend/prisma/schema.prisma"
+  },
+  "scripts": {
+    "build": "npm.cmd --prefix backend run build && npm.cmd --prefix frontend run build",
+    "build:backend": "npm.cmd --prefix backend run build",
+    "build:frontend": "npm.cmd --prefix frontend run build",
+    "dev:backend": "npm.cmd --prefix backend run dev",
+    "dev:frontend": "npm.cmd --prefix frontend run dev",
+    "prisma:generate": "npm.cmd --prefix backend run prisma:generate",
+    "prisma:migrate": "npm.cmd --prefix backend run prisma:migrate",
+    "prisma:studio": "npm.cmd --prefix backend run prisma:studio",
+    "typecheck": "npm.cmd --prefix backend run typecheck && npm.cmd --prefix frontend run typecheck"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.8.0",
+    "pg": "^8.20.0"
+  }
+}

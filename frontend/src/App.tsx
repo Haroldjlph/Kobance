@@ -1,0 +1,717 @@
+import { FormEvent, ReactElement, ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  BarChart3,
+  Building2,
+  CalendarDays,
+  Download,
+  FileText,
+  LockKeyhole,
+  LogOut,
+  ReceiptText,
+  Scale,
+  ShoppingCart,
+  UserPlus,
+  Users
+} from "lucide-react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from "recharts";
+import { RealWorkspace } from "./RealWorkspace";
+import { isSupabaseConfigured, supabase } from "./supabase";
+import googleBadge from "../img/google.png";
+import iphoneBadge from "../img/iphone.png";
+
+type AuthMode = "login" | "register";
+type DemoPage = "dashboard" | "clients" | "suppliers" | "sales" | "purchases" | "vat" | "monthly" | "yearly";
+
+type AuthUser = {
+  id: string;
+  email: string;
+  name: string | null;
+};
+
+type Totals = {
+  salesHt: number;
+  salesTtc: number;
+  purchasesHt: number;
+  purchasesTtc: number;
+  collectedVat: number;
+  deductibleVat: number;
+  vatDue: number;
+  profit: number;
+};
+
+const clients = [
+  { name: "Atelier Martin", email: "contact@atelier-martin.fr", phone: "01 42 10 33 20", city: "Paris", siret: "812 456 903 00018" },
+  { name: "Studio Bellecour", email: "admin@bellecour.fr", phone: "04 78 44 12 90", city: "Lyon", siret: "903 118 441 00022" },
+  { name: "Maison Lenoir", email: "factures@lenoir.fr", phone: "02 40 77 19 34", city: "Nantes", siret: "534 872 119 00031" }
+];
+
+const suppliers = [
+  { name: "Papeterie Pro", email: "compta@papeteriepro.fr", phone: "01 55 20 11 91", city: "Paris", siret: "421 905 778 00016" },
+  { name: "Web Services SAS", email: "billing@webservices.fr", phone: "03 88 71 10 10", city: "Strasbourg", siret: "790 221 104 00027" },
+  { name: "Mobilier Bureau", email: "contact@mobilierbureau.fr", phone: "05 56 80 44 21", city: "Bordeaux", siret: "688 440 123 00019" }
+];
+
+const sales = [
+  { date: "05/04/2026", client: "Atelier Martin", description: "Prestation conseil", ht: 1800, vat: 360, ttc: 2160, status: "Payee" },
+  { date: "12/04/2026", client: "Studio Bellecour", description: "Creation site vitrine", ht: 3200, vat: 640, ttc: 3840, status: "Non payee" },
+  { date: "19/04/2026", client: "Maison Lenoir", description: "Maintenance mensuelle", ht: 950, vat: 190, ttc: 1140, status: "Payee" }
+];
+
+const purchases = [
+  { date: "03/04/2026", supplier: "Papeterie Pro", description: "Fournitures bureau", ht: 210, vat: 42, ttc: 252, status: "Paye" },
+  { date: "08/04/2026", supplier: "Web Services SAS", description: "Hebergement annuel", ht: 480, vat: 96, ttc: 576, status: "Paye" },
+  { date: "17/04/2026", supplier: "Mobilier Bureau", description: "Chaise ergonomique", ht: 390, vat: 78, ttc: 468, status: "Non paye" }
+];
+
+const monthlyData = [
+  { month: "Jan", sales: 5200, purchases: 1700, profit: 3500 },
+  { month: "Fev", sales: 6100, purchases: 2100, profit: 4000 },
+  { month: "Mar", sales: 7350, purchases: 2500, profit: 4850 },
+  { month: "Avr", sales: 5950, purchases: 1080, profit: 4870 },
+  { month: "Mai", sales: 6900, purchases: 2300, profit: 4600 },
+  { month: "Juin", sales: 8100, purchases: 2950, profit: 5150 }
+];
+
+const vatByRate = [
+  { rate: "20 %", salesHt: 5950, collectedVat: 1190, purchasesHt: 1080, deductibleVat: 216 },
+  { rate: "10 %", salesHt: 0, collectedVat: 0, purchasesHt: 0, deductibleVat: 0 },
+  { rate: "5,5 %", salesHt: 0, collectedVat: 0, purchasesHt: 0, deductibleVat: 0 },
+  { rate: "0 %", salesHt: 0, collectedVat: 0, purchasesHt: 0, deductibleVat: 0 }
+];
+
+const formatEuro = (value: number) =>
+  new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
+
+export function App() {
+  const [mode, setMode] = useState<AuthMode>("login");
+  const [activePage, setActivePage] = useState<DemoPage>("dashboard");
+  const [name, setName] = useState("");
+  const [siret, setSiret] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      const sessionUser = data.session?.user;
+
+      if (sessionUser) {
+        setUser({
+          id: sessionUser.id,
+          email: sessionUser.email ?? "",
+          name: sessionUser.user_metadata.name ?? null
+        });
+      }
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session?.user) {
+        setUser(null);
+        return;
+      }
+
+      setUser({
+        id: session.user.id,
+        email: session.user.email ?? "",
+        name: session.user.user_metadata.name ?? null
+      });
+    });
+
+    return () => {
+      data.subscription.unsubscribe();
+    };
+  }, []);
+
+  const totals = useMemo(() => {
+    const salesHt = sales.reduce((sum, item) => sum + item.ht, 0);
+    const salesTtc = sales.reduce((sum, item) => sum + item.ttc, 0);
+    const purchasesHt = purchases.reduce((sum, item) => sum + item.ht, 0);
+    const purchasesTtc = purchases.reduce((sum, item) => sum + item.ttc, 0);
+    const collectedVat = sales.reduce((sum, item) => sum + item.vat, 0);
+    const deductibleVat = purchases.reduce((sum, item) => sum + item.vat, 0);
+
+    return {
+      salesHt,
+      salesTtc,
+      purchasesHt,
+      purchasesTtc,
+      collectedVat,
+      deductibleVat,
+      vatDue: collectedVat - deductibleVat,
+      profit: salesHt - purchasesHt
+    };
+  }, []);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsLoading(true);
+    setMessage("");
+
+    try {
+      if (!isSupabaseConfigured) {
+        setMessage("Supabase n'est pas configure.");
+        return;
+      }
+
+      const response =
+        mode === "login"
+          ? await supabase.auth.signInWithPassword({ email, password })
+          : await supabase.auth.signUp({
+              email,
+              password,
+              options: {
+                data: {
+                  name,
+                  siret: siret.replace(/\s/g, "")
+                }
+              }
+            });
+
+      if (response.error) {
+        const lowerMessage = response.error.message.toLowerCase();
+
+        if (lowerMessage.includes("already") || lowerMessage.includes("registered")) {
+          setMessage("Un compte existe deja avec cet email.");
+        } else {
+          setMessage(response.error.message);
+        }
+        return;
+      }
+
+      if (!response.data.session) {
+        setMessage(
+          mode === "register"
+            ? "Compte cree. Confirmez votre email Supabase, puis connectez-vous."
+            : "Connexion impossible : aucune session Supabase active."
+        );
+        return;
+      }
+
+      if (mode === "register" && response.data.user) {
+        await supabase.from("profiles").upsert({
+          user_id: response.data.user.id,
+          company_name: name || response.data.user.email || email,
+          siret: siret.replace(/\s/g, "")
+        });
+      }
+
+      if (response.data.user) {
+        setUser({
+          id: response.data.user.id,
+          email: response.data.user.email ?? email,
+          name: response.data.user.user_metadata.name ?? (name || null)
+        });
+      }
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "response" in error &&
+        typeof error.response === "object" &&
+        error.response !== null &&
+        "data" in error.response &&
+        typeof error.response.data === "object" &&
+        error.response.data !== null &&
+        "message" in error.response.data &&
+        typeof error.response.data.message === "string"
+      ) {
+        setMessage(error.response.data.message);
+      } else {
+        setMessage(
+          mode === "login"
+            ? "Connexion impossible. Verifiez vos identifiants ou creez un compte."
+            : "Creation du compte impossible. Verifiez les informations saisies."
+        );
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  function logout() {
+    void supabase.auth.signOut();
+    setUser(null);
+    setPassword("");
+    setSiret("");
+    setActivePage("dashboard");
+  }
+
+  function startDemo() {
+    setUser({
+      id: "demo",
+      email: "demo@kobance.fr",
+      name: "Compte demo"
+    });
+  }
+
+  if (user) {
+    if (user.id !== "demo") {
+      return <RealWorkspace onLogout={logout} userEmail={user.email} userId={user.id} userName={user.name ?? user.email} />;
+    }
+
+    return (
+      <main className="app-shell dashboard-shell">
+        <aside className="sidebar">
+          <div>
+            <p className="brand">Kobance</p>
+            <p className="muted">Votre compta, sans prise de tête.</p>
+            <p className="muted">Demo TPE France</p>
+            <nav className="nav-list">
+              <NavButton active={activePage === "dashboard"} icon={<BarChart3 size={18} />} label="Dashboard" onClick={() => setActivePage("dashboard")} />
+              <NavButton active={activePage === "clients"} icon={<Users size={18} />} label="Clients" onClick={() => setActivePage("clients")} />
+              <NavButton active={activePage === "suppliers"} icon={<Building2 size={18} />} label="Fournisseurs" onClick={() => setActivePage("suppliers")} />
+              <NavButton active={activePage === "sales"} icon={<FileText size={18} />} label="Ventes" onClick={() => setActivePage("sales")} />
+              <NavButton active={activePage === "purchases"} icon={<ShoppingCart size={18} />} label="Achats" onClick={() => setActivePage("purchases")} />
+              <NavButton active={activePage === "vat"} icon={<Scale size={18} />} label="Declaration TVA" onClick={() => setActivePage("vat")} />
+              <NavButton active={activePage === "monthly"} icon={<CalendarDays size={18} />} label="Recap mensuel" onClick={() => setActivePage("monthly")} />
+              <NavButton active={activePage === "yearly"} icon={<ReceiptText size={18} />} label="Recap annuel" onClick={() => setActivePage("yearly")} />
+            </nav>
+          </div>
+          <button className="ghost-button" onClick={logout} type="button">
+            <LogOut size={18} />
+            Deconnexion
+          </button>
+        </aside>
+
+        <section className="dashboard-content">
+          {activePage === "dashboard" ? <Dashboard totals={totals} /> : null}
+          {activePage === "clients" ? <DirectoryPage title="Clients" rows={clients} type="client" /> : null}
+          {activePage === "suppliers" ? <DirectoryPage title="Fournisseurs" rows={suppliers} type="supplier" /> : null}
+          {activePage === "sales" ? <InvoicesPage title="Ventes" rows={sales} partyLabel="Client" partyKey="client" /> : null}
+          {activePage === "purchases" ? <InvoicesPage title="Achats" rows={purchases} partyLabel="Fournisseur" partyKey="supplier" /> : null}
+          {activePage === "vat" ? <VatPage totals={totals} /> : null}
+          {activePage === "monthly" ? <MonthlyPage totals={totals} /> : null}
+          {activePage === "yearly" ? <YearlyPage /> : null}
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="app-shell">
+      <section className="auth-layout">
+        <div className="auth-intro">
+          <p className="eyebrow">Kobance</p>
+          <h1>Votre compta, sans prise de tête.</h1>
+          <p>
+            Connectez-vous pour gerer vos clients, fournisseurs, factures, achats,
+            TVA et benefices en euros.
+          </p>
+          <div className="download-badges" aria-label="Installation mobile">
+            <a href="#installation-mobile" onClick={(event) => event.preventDefault()}>
+              <img alt="Installer sur Google Play" src={googleBadge} />
+            </a>
+            <a href="#installation-mobile" onClick={(event) => event.preventDefault()}>
+              <img alt="Installer sur iPhone" src={iphoneBadge} />
+            </a>
+          </div>
+          <p className="muted" id="installation-mobile">
+            Version mobile installable depuis le navigateur apres mise en ligne.
+          </p>
+        </div>
+
+        <form className="auth-card" onSubmit={handleSubmit}>
+          <div className="auth-switch" aria-label="Choix du mode d'authentification">
+            <button
+              className={mode === "login" ? "active" : ""}
+              onClick={() => {
+                setMode("login");
+                setMessage("");
+              }}
+              type="button"
+            >
+              Connexion
+            </button>
+            <button
+              className={mode === "register" ? "active" : ""}
+              onClick={() => {
+                setMode("register");
+                setMessage("");
+              }}
+              type="button"
+            >
+              Creer un compte
+            </button>
+          </div>
+
+          <div className="form-heading">
+            {mode === "login" ? <LockKeyhole size={24} /> : <UserPlus size={24} />}
+            <div>
+              <h2>{mode === "login" ? "Connexion" : "Inscription"}</h2>
+              <p>
+                {mode === "login"
+                  ? "Accedez a votre espace comptable."
+                  : "Creez votre premier compte utilisateur."}
+              </p>
+            </div>
+          </div>
+
+          {mode === "register" ? (
+            <label>
+              Nom
+              <input autoComplete="name" onChange={(event) => setName(event.target.value)} type="text" value={name} />
+            </label>
+          ) : null}
+
+          {mode === "register" ? (
+            <label>
+              SIRET
+              <input
+                inputMode="numeric"
+                maxLength={17}
+                minLength={14}
+                onChange={(event) => setSiret(event.target.value)}
+                placeholder="14 chiffres"
+                required
+                type="text"
+                value={siret}
+              />
+            </label>
+          ) : null}
+
+          <label>
+            Email
+            <input autoComplete="email" onChange={(event) => setEmail(event.target.value)} required type="email" value={email} />
+          </label>
+
+          <label>
+            Mot de passe
+            <input autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} onChange={(event) => setPassword(event.target.value)} required type="password" value={password} />
+          </label>
+
+          {message ? <p className="error-message">{message}</p> : null}
+
+          <button className="primary-button" disabled={isLoading} type="submit">
+            {isLoading ? "Veuillez patienter..." : mode === "login" ? "Se connecter" : "Creer le compte"}
+          </button>
+
+          <button
+            className="link-button"
+            onClick={() => {
+              setMode(mode === "login" ? "register" : "login");
+              setMessage("");
+            }}
+            type="button"
+          >
+            {mode === "login" ? "Creer un compte" : "J'ai deja un compte"}
+          </button>
+
+          <button className="demo-button" onClick={startDemo} type="button">
+            Voir la demo complete
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function NavButton(props: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
+  return (
+    <button className={props.active ? "nav-item active" : "nav-item"} onClick={props.onClick} type="button">
+      {props.icon}
+      {props.label}
+    </button>
+  );
+}
+
+function PageHeader(props: { title: string; subtitle: string }) {
+  return (
+    <div className="page-header">
+      <div>
+        <p className="eyebrow">Mode demo</p>
+        <h1>{props.title}</h1>
+        <p>{props.subtitle}</p>
+      </div>
+      <button className="export-button" type="button">
+        <Download size={18} />
+        Export CSV
+      </button>
+    </div>
+  );
+}
+
+function Dashboard({ totals }: { totals: Totals }) {
+  return (
+    <>
+      <PageHeader title="Dashboard" subtitle="Vue mensuelle avril 2026 avec donnees de presentation." />
+      <div className="metrics-grid">
+        <Metric label="CA du mois HT" value={formatEuro(totals.salesHt)} />
+        <Metric label="Achats du mois HT" value={formatEuro(totals.purchasesHt)} />
+        <Metric label="TVA a declarer" value={formatEuro(totals.vatDue)} />
+        <Metric label="Benefice estime" value={formatEuro(totals.profit)} />
+      </div>
+      <div className="chart-grid">
+        <ChartCard title="Ventes et achats mensuels">
+          <BarChart data={monthlyData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="month" />
+            <YAxis />
+            <Tooltip formatter={(value) => formatEuro(Number(value))} />
+            <Bar dataKey="sales" fill="#21725e" name="Ventes HT" />
+            <Bar dataKey="purchases" fill="#d97706" name="Achats HT" />
+          </BarChart>
+        </ChartCard>
+        <ChartCard title="Benefices mensuels">
+          <LineChart data={monthlyData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="month" />
+            <YAxis />
+            <Tooltip formatter={(value) => formatEuro(Number(value))} />
+            <Line dataKey="profit" name="Benefice HT" stroke="#1849a9" strokeWidth={3} />
+          </LineChart>
+        </ChartCard>
+      </div>
+    </>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <article className="metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </article>
+  );
+}
+
+function ChartCard({ children, title }: { children: ReactElement; title: string }) {
+  return (
+    <section className="chart-card">
+      <h2>{title}</h2>
+      <div className="chart-area">
+        <ResponsiveContainer height="100%" width="100%">
+          {children}
+        </ResponsiveContainer>
+      </div>
+    </section>
+  );
+}
+
+function DirectoryPage({ rows, title, type }: { rows: typeof clients; title: string; type: "client" | "supplier" }) {
+  return (
+    <>
+      <PageHeader title={title} subtitle={`Liste de ${type === "client" ? "clients" : "fournisseurs"} exemple avec SIRET et coordonnees.`} />
+      <div className="toolbar">
+        <input placeholder="Rechercher..." />
+        <button className="primary-button" type="button">Ajouter</button>
+      </div>
+      <div className="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Nom</th>
+              <th>Email</th>
+              <th>Telephone</th>
+              <th>Ville</th>
+              <th>SIRET</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.siret}>
+                <td>{row.name}</td>
+                <td>{row.email}</td>
+                <td>{row.phone}</td>
+                <td>{row.city}</td>
+                <td>{row.siret}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+type InvoiceRow = {
+  date: string;
+  client?: string;
+  supplier?: string;
+  description: string;
+  ht: number;
+  vat: number;
+  ttc: number;
+  status: string;
+};
+
+function InvoicesPage({ partyKey, partyLabel, rows, title }: { partyKey: "client" | "supplier"; partyLabel: string; rows: InvoiceRow[]; title: string }) {
+  return (
+    <>
+      <PageHeader title={title} subtitle="Factures avec HT, TVA, TTC, statut et filtres de presentation." />
+      <div className="toolbar">
+        <select defaultValue="04"><option value="04">Avril</option></select>
+        <select defaultValue="2026"><option value="2026">2026</option></select>
+        <button className="primary-button" type="button">Ajouter</button>
+      </div>
+      <div className="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>{partyLabel}</th>
+              <th>Description</th>
+              <th>HT</th>
+              <th>TVA</th>
+              <th>TTC</th>
+              <th>Statut</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={`${row.date}-${row.description}`}>
+                <td>{row.date}</td>
+                <td>{row[partyKey]}</td>
+                <td>{row.description}</td>
+                <td>{formatEuro(row.ht)}</td>
+                <td>{formatEuro(row.vat)}</td>
+                <td>{formatEuro(row.ttc)}</td>
+                <td><span className={row.status.includes("Non") ? "badge warning" : "badge"}>{row.status}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+function MonthlyPage({ totals }: { totals: Totals }) {
+  return (
+    <>
+      <PageHeader title="Recap mensuel" subtitle="Avril 2026 : synthese TVA, chiffre d'affaires, achats et benefice." />
+      <div className="summary-grid">
+        <Metric label="Ventes HT" value={formatEuro(totals.salesHt)} />
+        <Metric label="Ventes TTC" value={formatEuro(totals.salesTtc)} />
+        <Metric label="TVA collectee" value={formatEuro(totals.collectedVat)} />
+        <Metric label="Achats HT" value={formatEuro(totals.purchasesHt)} />
+        <Metric label="Achats TTC" value={formatEuro(totals.purchasesTtc)} />
+        <Metric label="TVA deductible" value={formatEuro(totals.deductibleVat)} />
+        <Metric label="TVA a payer" value={formatEuro(totals.vatDue)} />
+        <Metric label="Benefice estime" value={formatEuro(totals.profit)} />
+      </div>
+      <InvoicesPage title="Detail ventes du mois" rows={sales} partyLabel="Client" partyKey="client" />
+      <InvoicesPage title="Detail achats du mois" rows={purchases} partyLabel="Fournisseur" partyKey="supplier" />
+    </>
+  );
+}
+
+function VatPage({ totals }: { totals: Totals }) {
+  return (
+    <>
+      <PageHeader title="Declaration TVA" subtitle="Preparation de la declaration de TVA pour avril 2026." />
+      <div className="vat-status">
+        <div>
+          <p className="eyebrow">Statut</p>
+          <h2>TVA a payer : {formatEuro(totals.vatDue)}</h2>
+          <p>Periode du 01/04/2026 au 30/04/2026. Donnees demo non transmises a l'administration fiscale.</p>
+        </div>
+        <span className="badge warning">A verifier</span>
+      </div>
+
+      <div className="summary-grid">
+        <Metric label="TVA collectee ventes" value={formatEuro(totals.collectedVat)} />
+        <Metric label="TVA deductible achats" value={formatEuro(totals.deductibleVat)} />
+        <Metric label="TVA nette" value={formatEuro(totals.vatDue)} />
+        <Metric label="Base HT ventes" value={formatEuro(totals.salesHt)} />
+      </div>
+
+      <div className="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Taux TVA</th>
+              <th>Base ventes HT</th>
+              <th>TVA collectee</th>
+              <th>Base achats HT</th>
+              <th>TVA deductible</th>
+              <th>TVA nette</th>
+            </tr>
+          </thead>
+          <tbody>
+            {vatByRate.map((row) => (
+              <tr key={row.rate}>
+                <td>{row.rate}</td>
+                <td>{formatEuro(row.salesHt)}</td>
+                <td>{formatEuro(row.collectedVat)}</td>
+                <td>{formatEuro(row.purchasesHt)}</td>
+                <td>{formatEuro(row.deductibleVat)}</td>
+                <td>{formatEuro(row.collectedVat - row.deductibleVat)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="declaration-panel">
+        <h2>Controle avant declaration</h2>
+        <ul>
+          <li>Verifier que toutes les ventes du mois sont saisies.</li>
+          <li>Verifier que les factures fournisseurs sont eligibles a la TVA deductible.</li>
+          <li>Exporter le recap TVA et conserver les justificatifs.</li>
+        </ul>
+      </div>
+    </>
+  );
+}
+
+function YearlyPage() {
+  return (
+    <>
+      <PageHeader title="Recap annuel" subtitle="Tableau mois par mois avec totaux annuels et graphiques." />
+      <div className="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Mois</th>
+              <th>CA HT</th>
+              <th>Achats HT</th>
+              <th>TVA a declarer</th>
+              <th>Benefice</th>
+            </tr>
+          </thead>
+          <tbody>
+            {monthlyData.map((row) => (
+              <tr key={row.month}>
+                <td>{row.month}</td>
+                <td>{formatEuro(row.sales)}</td>
+                <td>{formatEuro(row.purchases)}</td>
+                <td>{formatEuro((row.sales - row.purchases) * 0.2)}</td>
+                <td>{formatEuro(row.profit)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="chart-grid">
+        <ChartCard title="CA HT annuel">
+          <BarChart data={monthlyData}>
+            <XAxis dataKey="month" />
+            <YAxis />
+            <Tooltip formatter={(value) => formatEuro(Number(value))} />
+            <Bar dataKey="sales" fill="#21725e" />
+          </BarChart>
+        </ChartCard>
+        <ChartCard title="Benefice annuel">
+          <LineChart data={monthlyData}>
+            <XAxis dataKey="month" />
+            <YAxis />
+            <Tooltip formatter={(value) => formatEuro(Number(value))} />
+            <Line dataKey="profit" stroke="#1849a9" strokeWidth={3} />
+          </LineChart>
+        </ChartCard>
+      </div>
+    </>
+  );
+}
