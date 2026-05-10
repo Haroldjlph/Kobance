@@ -7,6 +7,7 @@ import {
   Download,
   FileText,
   LogOut,
+  MoreHorizontal,
   Package,
   HelpCircle,
   Settings,
@@ -724,6 +725,7 @@ export function RealWorkspace({
 }) {
   const whatsappUrl = supportWhatsappUrl();
   const [page, setPage] = useState<Page>("dashboard");
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [activeCompanyUserId, setActiveCompanyUserId] = useState(userId);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileForm, setProfileForm] = useState(emptyProfile);
@@ -1350,7 +1352,7 @@ export function RealWorkspace({
 
     await supabase.from("quotes").update({ status: "ISSUED" }).eq("id", quote.id);
     setSelectedInvoiceId(invoice.id);
-    setPage("invoices");
+    goToPage("invoices");
     await loadData();
   }
 
@@ -1785,25 +1787,65 @@ export function RealWorkspace({
     return `${prefix}-${selectedYear}-${String(selectedMonth).padStart(2, "0")}.csv`;
   }
 
+  function goToPage(nextPage: Page) {
+    setPage(nextPage);
+    setMobileMoreOpen(false);
+  }
+
+  const primaryMobilePages: Array<{ page: Page; icon: React.ReactNode; label: string }> = [
+    { page: "dashboard", icon: <BarChart3 size={20} />, label: "Accueil" },
+    { page: "invoices", icon: <ReceiptText size={20} />, label: "Factures" },
+    { page: "purchases", icon: <ShoppingCart size={20} />, label: "Achats" },
+    { page: "bank", icon: <CreditCard size={20} />, label: "Banque" }
+  ];
+
+  const secondaryMobilePages: Array<{ page: Page; icon: React.ReactNode; label: string }> = [
+    { page: "company", icon: <Settings size={20} />, label: "Entreprise" },
+    { page: "articles", icon: <Package size={20} />, label: "Articles" },
+    { page: "clients", icon: <Users size={20} />, label: "Clients" },
+    { page: "suppliers", icon: <Building2 size={20} />, label: "Fournisseurs" },
+    { page: "quotes", icon: <FileText size={20} />, label: "Devis" },
+    { page: "vat", icon: <Scale size={20} />, label: "TVA" },
+    { page: "monthly", icon: <CalendarDays size={20} />, label: "Recap" }
+  ];
+
+  const currentPageLabel =
+    primaryMobilePages.find((item) => item.page === page)?.label ??
+    secondaryMobilePages.find((item) => item.page === page)?.label ??
+    "Kobance";
+
   return (
     <main className="app-shell dashboard-shell">
+      <header className="mobile-app-header">
+        <div className="mobile-brand">
+          <img alt="" src="/icon-192.png" />
+          <div>
+            <strong>Kobance</strong>
+            <span>{currentPageLabel}</span>
+          </div>
+        </div>
+        <button className="mobile-header-button" onClick={() => setMobileMoreOpen(true)} type="button">
+          <MoreHorizontal size={22} />
+          Plus
+        </button>
+      </header>
       <aside className="sidebar">
         <div>
           <p className="brand">Kobance</p>
-          <p className="muted">Votre compta, sans prise de tête.</p>
+          <p className="muted">Votre compta, sans prise de tete.</p>
           <p className="muted">{userName}</p>
           <nav className="nav-list">
-            <Nav active={page === "dashboard"} icon={<BarChart3 size={18} />} label="Dashboard" onClick={() => setPage("dashboard")} />
-            <Nav active={page === "company"} icon={<Settings size={18} />} label="Entreprise" onClick={() => setPage("company")} />
-            <Nav active={page === "articles"} icon={<Package size={18} />} label="Articles" onClick={() => setPage("articles")} />
-            <Nav active={page === "clients"} icon={<Users size={18} />} label="Clients" onClick={() => setPage("clients")} />
-            <Nav active={page === "suppliers"} icon={<Building2 size={18} />} label="Fournisseurs" onClick={() => setPage("suppliers")} />
-            <Nav active={page === "quotes"} icon={<FileText size={18} />} label="Devis" onClick={() => setPage("quotes")} />
-            <Nav active={page === "invoices"} icon={<ReceiptText size={18} />} label="Factures" onClick={() => setPage("invoices")} />
-            <Nav active={page === "purchases"} icon={<ShoppingCart size={18} />} label="Achats" onClick={() => setPage("purchases")} />
-            <Nav active={page === "bank"} icon={<CreditCard size={18} />} label="Banque" onClick={() => setPage("bank")} />
-            <Nav active={page === "vat"} icon={<Scale size={18} />} label="TVA" onClick={() => setPage("vat")} />
-            <Nav active={page === "monthly"} icon={<CalendarDays size={18} />} label="Recap mensuel" onClick={() => setPage("monthly")} />
+            <Nav active={page === "dashboard"} icon={<BarChart3 size={18} />} label="Dashboard" onClick={() => goToPage("dashboard")} />
+            <Nav active={page === "company"} icon={<Settings size={18} />} label="Entreprise" onClick={() => goToPage("company")} />
+            <Nav active={page === "articles"} icon={<Package size={18} />} label="Articles" onClick={() => goToPage("articles")} />
+            <Nav active={page === "clients"} icon={<Users size={18} />} label="Clients" onClick={() => goToPage("clients")} />
+            <Nav active={page === "suppliers"} icon={<Building2 size={18} />} label="Fournisseurs" onClick={() => goToPage("suppliers")} />
+            <Nav active={page === "quotes"} icon={<FileText size={18} />} label="Devis" onClick={() => goToPage("quotes")} />
+            <Nav active={page === "invoices"} icon={<ReceiptText size={18} />} label="Factures" onClick={() => goToPage("invoices")} />
+            <Nav active={page === "purchases"} icon={<ShoppingCart size={18} />} label="Achats" onClick={() => goToPage("purchases")} />
+            <Nav active={page === "bank"} icon={<CreditCard size={18} />} label="Banque" onClick={() => goToPage("bank")} />
+            <Nav active={page === "vat"} icon={<Scale size={18} />} label="TVA" onClick={() => goToPage("vat")} />
+            <Nav active={page === "monthly"} icon={<CalendarDays size={18} />} label="Recap mensuel" onClick={() => goToPage("monthly")} />
           </nav>
         </div>
         <button className="ghost-button" onClick={onLogout} type="button">
@@ -1832,6 +1874,48 @@ export function RealWorkspace({
         {page === "vat" ? <VatPage creditNotes={creditNotes} filename={periodFilename("tva")} invoices={invoiceDocuments} purchases={purchases} totals={totals} /> : null}
         {page === "monthly" ? <Monthly filename={periodFilename("recap-mensuel")} totals={totals} invoices={invoiceDocuments} purchases={purchases} /> : null}
       </section>
+      <nav className="mobile-bottom-nav" aria-label="Navigation mobile">
+        {primaryMobilePages.map((item) => (
+          <button className={page === item.page ? "active" : ""} key={item.page} onClick={() => goToPage(item.page)} type="button">
+            {item.icon}
+            <span>{item.label}</span>
+          </button>
+        ))}
+        <button className={mobileMoreOpen || secondaryMobilePages.some((item) => item.page === page) ? "active" : ""} onClick={() => setMobileMoreOpen(true)} type="button">
+          <MoreHorizontal size={20} />
+          <span>Plus</span>
+        </button>
+      </nav>
+      {mobileMoreOpen ? (
+        <div className="mobile-more-backdrop" onClick={() => setMobileMoreOpen(false)} role="presentation">
+          <section className="mobile-more-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="mobile-more-header">
+              <div className="mobile-brand">
+                <img alt="" src="/icon-192.png" />
+                <div>
+                  <strong>Kobance</strong>
+                  <span>Modules</span>
+                </div>
+              </div>
+              <button className="mobile-header-button" onClick={() => setMobileMoreOpen(false)} type="button">
+                Fermer
+              </button>
+            </div>
+            <div className="mobile-more-grid">
+              {secondaryMobilePages.map((item) => (
+                <button className={page === item.page ? "active" : ""} key={item.page} onClick={() => goToPage(item.page)} type="button">
+                  {item.icon}
+                  <span>{item.label}</span>
+                </button>
+              ))}
+              <button className="logout-mobile-button" onClick={onLogout} type="button">
+                <LogOut size={20} />
+                <span>Deconnexion</span>
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {whatsappUrl ? <WhatsappSupportButton url={whatsappUrl} /> : null}
     </main>
   );
@@ -3018,3 +3102,4 @@ function Monthly({
     </>
   );
 }
+
