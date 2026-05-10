@@ -26,11 +26,14 @@ import {
 } from "recharts";
 import { RealWorkspace } from "./RealWorkspace";
 import { isSupabaseConfigured, supabase } from "./supabase";
-import googleBadge from "../img/google.png";
-import iphoneBadge from "../img/iphone.png";
 
 type AuthMode = "login" | "register";
 type DemoPage = "dashboard" | "clients" | "suppliers" | "sales" | "purchases" | "vat" | "monthly" | "yearly";
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+};
 
 type AuthUser = {
   id: string;
@@ -102,6 +105,8 @@ export function App() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isStandalone, setIsStandalone] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -131,6 +136,33 @@ export function App() {
 
     return () => {
       data.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    const navigatorWithStandalone = navigator as Navigator & { standalone?: boolean };
+
+    setIsStandalone(
+      window.matchMedia("(display-mode: standalone)").matches ||
+        Boolean(navigatorWithStandalone.standalone)
+    );
+
+    function handleBeforeInstallPrompt(event: Event) {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    }
+
+    function handleAppInstalled() {
+      setInstallPrompt(null);
+      setIsStandalone(true);
+    }
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleAppInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleAppInstalled);
     };
   }, []);
 
@@ -256,6 +288,16 @@ export function App() {
     });
   }
 
+  async function installApp() {
+    if (!installPrompt) {
+      return;
+    }
+
+    await installPrompt.prompt();
+    await installPrompt.userChoice;
+    setInstallPrompt(null);
+  }
+
   if (user) {
     if (user.id !== "demo") {
       return <RealWorkspace onLogout={logout} userEmail={user.email} userId={user.id} userName={user.name ?? user.email} />;
@@ -266,7 +308,7 @@ export function App() {
         <aside className="sidebar">
           <div>
             <p className="brand">Kobance</p>
-            <p className="muted">Votre compta, sans prise de tête.</p>
+            <p className="muted">Votre compta, sans prise de tete.</p>
             <p className="muted">Demo TPE France</p>
             <nav className="nav-list">
               <NavButton active={activePage === "dashboard"} icon={<BarChart3 size={18} />} label="Dashboard" onClick={() => setActivePage("dashboard")} />
@@ -304,21 +346,19 @@ export function App() {
       <section className="auth-layout">
         <div className="auth-intro">
           <p className="eyebrow">Kobance</p>
-          <h1>Votre compta, sans prise de tête.</h1>
+          <h1>Votre compta, sans prise de tete.</h1>
           <p>
             Connectez-vous pour gerer vos clients, fournisseurs, factures, achats,
             TVA et benefices en euros.
           </p>
-          <div className="download-badges" aria-label="Installation mobile">
-            <a href="#installation-mobile" onClick={(event) => event.preventDefault()}>
-              <img alt="Installer sur Google Play" src={googleBadge} />
-            </a>
-            <a href="#installation-mobile" onClick={(event) => event.preventDefault()}>
-              <img alt="Installer sur iPhone" src={iphoneBadge} />
-            </a>
-          </div>
+          {installPrompt && !isStandalone ? (
+            <button className="install-button" onClick={installApp} type="button">
+              <Download size={18} />
+              Installer l'application
+            </button>
+          ) : null}
           <p className="muted" id="installation-mobile">
-            Version mobile installable depuis le navigateur apres mise en ligne.
+            Sur Android/Chrome, utilisez le bouton Installer s'il apparait. Sur iPhone, ouvrez le menu Partager de Safari, puis choisissez Ajouter a l'ecran d'accueil.
           </p>
         </div>
 

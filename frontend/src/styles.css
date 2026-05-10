@@ -76,6 +76,15 @@ select {
   width: auto;
 }
 
+.install-button {
+  align-items: center;
+  background: #21725e;
+  color: #ffffff;
+  display: inline-flex;
+  gap: 8px;
+  margin-top: 24px;
+}
+
 .form-heading {
   align-items: center;
   display: flex;
