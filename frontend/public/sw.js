@@ -1,4 +1,4 @@
-const CACHE_NAME = "kobance-v2";
+const CACHE_NAME = "kobance-v3";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -25,12 +25,8 @@ self.addEventListener("fetch", (event) => {
   }
 
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-
-      return fetch(event.request).then((networkResponse) => {
+    fetch(event.request)
+      .then((networkResponse) => {
         const responseClone = networkResponse.clone();
 
         caches.open(CACHE_NAME).then((cache) => {
@@ -38,7 +34,7 @@ self.addEventListener("fetch", (event) => {
         });
 
         return networkResponse;
-      });
-    })
+      })
+      .catch(() => caches.match(event.request))
   );
 });
