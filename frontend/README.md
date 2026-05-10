@@ -1,11 +1,33 @@
 # Frontend Kobance
 
-Interface React + TypeScript.
+Application React + TypeScript basee sur Vite.
 
-Objectif :
+## Commandes
 
-- interface en francais ;
-- devise en euro ;
-- responsive ordinateur, tablette et mobile ;
-- navigation avec menu lateral ;
-- pages Dashboard, Clients, Fournisseurs, Ventes, Achats, Recap mensuel et Recap annuel.
+```powershell
+npm install
+npm run dev
+npm run typecheck
+npm run build
+```
+
+## Variables d'environnement
+
+Creer `frontend/.env` :
+
+```env
+VITE_SUPABASE_URL=
+VITE_SUPABASE_ANON_KEY=
+VITE_SUPPORT_WHATSAPP_NUMBER=
+VITE_SUPPORT_WHATSAPP_MESSAGE=Bonjour, j'ai besoin d'aide sur Kobance.
+```
+
+## Deploiement
+
+Sur Vercel :
+
+```text
+Root Directory   : frontend
+Build Command    : npm run build
+Output Directory : dist
+```
