@@ -3,6 +3,7 @@ import {
   BarChart3,
   Building2,
   CalendarDays,
+  CreditCard,
   Download,
   FileText,
   LockKeyhole,
@@ -29,7 +30,7 @@ import { RealWorkspace } from "./RealWorkspace";
 import { isSupabaseConfigured, supabase } from "./supabase";
 
 type AuthMode = "login" | "register" | "forgot" | "recovery";
-type DemoPage = "dashboard" | "clients" | "suppliers" | "sales" | "purchases" | "vat" | "monthly" | "yearly";
+type DemoPage = "dashboard" | "company" | "articles" | "clients" | "suppliers" | "quotes" | "invoices" | "purchases" | "bank" | "vat" | "monthly";
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
@@ -65,16 +66,34 @@ const suppliers = [
   { name: "Mobilier Bureau", email: "contact@mobilierbureau.fr", phone: "05 56 80 44 21", city: "Bordeaux", siret: "688 440 123 00019" }
 ];
 
+const articles = [
+  { reference: "CONS-01", name: "Prestation conseil", description: "Accompagnement mensuel", price: 900, vatRate: 20 },
+  { reference: "WEB-01", name: "Creation site vitrine", description: "Conception et integration", price: 3200, vatRate: 20 },
+  { reference: "MAINT-01", name: "Maintenance mensuelle", description: "Suivi technique et correctifs", price: 950, vatRate: 20 }
+];
+
+const quotes = [
+  { date: "02/04/2026", client: "Atelier Martin", description: "Audit comptable interne", ht: 1200, vat: 240, ttc: 1440, status: "Brouillon" },
+  { date: "10/04/2026", client: "Studio Bellecour", description: "Creation site vitrine", ht: 3200, vat: 640, ttc: 3840, status: "Valide" },
+  { date: "23/04/2026", client: "Maison Lenoir", description: "Maintenance trimestrielle", ht: 2850, vat: 570, ttc: 3420, status: "Envoye" }
+];
+
 const sales = [
-  { date: "05/04/2026", client: "Atelier Martin", description: "Prestation conseil", ht: 1800, vat: 360, ttc: 2160, status: "Payee" },
-  { date: "12/04/2026", client: "Studio Bellecour", description: "Creation site vitrine", ht: 3200, vat: 640, ttc: 3840, status: "Non payee" },
-  { date: "19/04/2026", client: "Maison Lenoir", description: "Maintenance mensuelle", ht: 950, vat: 190, ttc: 1140, status: "Payee" }
+  { date: "05/04/2026", client: "Atelier Martin", description: "FAC-2026-0001 - Prestation conseil", ht: 1800, vat: 360, ttc: 2160, status: "Payee" },
+  { date: "12/04/2026", client: "Studio Bellecour", description: "FAC-2026-0002 - Creation site vitrine", ht: 3200, vat: 640, ttc: 3840, status: "Emise" },
+  { date: "19/04/2026", client: "Maison Lenoir", description: "FAC-2026-0003 - Maintenance mensuelle", ht: 950, vat: 190, ttc: 1140, status: "Payee" }
 ];
 
 const purchases = [
   { date: "03/04/2026", supplier: "Papeterie Pro", description: "Fournitures bureau", ht: 210, vat: 42, ttc: 252, status: "Paye" },
   { date: "08/04/2026", supplier: "Web Services SAS", description: "Hebergement annuel", ht: 480, vat: 96, ttc: 576, status: "Paye" },
   { date: "17/04/2026", supplier: "Mobilier Bureau", description: "Chaise ergonomique", ht: 390, vat: 78, ttc: 468, status: "Non paye" }
+];
+
+const bankTransactions = [
+  { date: "06/04/2026", label: "Virement Atelier Martin", type: "Encaissement", amount: 2160, reconciliation: "Facture FAC-2026-0001" },
+  { date: "09/04/2026", label: "Hebergement Web Services", type: "Decaissement", amount: -576, reconciliation: "Achat rapproche" },
+  { date: "20/04/2026", label: "Virement Maison Lenoir", type: "Encaissement", amount: 1140, reconciliation: "Facture FAC-2026-0003" }
 ];
 
 const monthlyData = [
@@ -356,15 +375,18 @@ export function App() {
 
     const primaryDemoPages: Array<{ page: DemoPage; icon: ReactNode; label: string }> = [
       { page: "dashboard", icon: <BarChart3 size={20} />, label: "Accueil" },
-      { page: "sales", icon: <FileText size={20} />, label: "Ventes" },
+      { page: "invoices", icon: <ReceiptText size={20} />, label: "Factures" },
       { page: "purchases", icon: <ShoppingCart size={20} />, label: "Achats" },
-      { page: "vat", icon: <Scale size={20} />, label: "TVA" }
+      { page: "bank", icon: <CreditCard size={20} />, label: "Banque" }
     ];
     const secondaryDemoPages: Array<{ page: DemoPage; icon: ReactNode; label: string }> = [
+      { page: "company", icon: <Building2 size={20} />, label: "Entreprise" },
+      { page: "articles", icon: <FileText size={20} />, label: "Articles" },
       { page: "clients", icon: <Users size={20} />, label: "Clients" },
       { page: "suppliers", icon: <Building2 size={20} />, label: "Fournisseurs" },
-      { page: "monthly", icon: <CalendarDays size={20} />, label: "Mensuel" },
-      { page: "yearly", icon: <ReceiptText size={20} />, label: "Annuel" }
+      { page: "quotes", icon: <FileText size={20} />, label: "Devis" },
+      { page: "vat", icon: <Scale size={20} />, label: "TVA" },
+      { page: "monthly", icon: <CalendarDays size={20} />, label: "Recap" }
     ];
     const currentDemoPageLabel =
       primaryDemoPages.find((item) => item.page === activePage)?.label ??
@@ -397,13 +419,16 @@ export function App() {
             <p className="muted">Demo TPE France</p>
             <nav className="nav-list">
               <NavButton active={activePage === "dashboard"} icon={<BarChart3 size={18} />} label="Dashboard" onClick={() => goToDemoPage("dashboard")} />
+              <NavButton active={activePage === "company"} icon={<Building2 size={18} />} label="Entreprise" onClick={() => goToDemoPage("company")} />
+              <NavButton active={activePage === "articles"} icon={<FileText size={18} />} label="Articles" onClick={() => goToDemoPage("articles")} />
               <NavButton active={activePage === "clients"} icon={<Users size={18} />} label="Clients" onClick={() => goToDemoPage("clients")} />
               <NavButton active={activePage === "suppliers"} icon={<Building2 size={18} />} label="Fournisseurs" onClick={() => goToDemoPage("suppliers")} />
-              <NavButton active={activePage === "sales"} icon={<FileText size={18} />} label="Ventes" onClick={() => goToDemoPage("sales")} />
+              <NavButton active={activePage === "quotes"} icon={<FileText size={18} />} label="Devis" onClick={() => goToDemoPage("quotes")} />
+              <NavButton active={activePage === "invoices"} icon={<ReceiptText size={18} />} label="Factures" onClick={() => goToDemoPage("invoices")} />
               <NavButton active={activePage === "purchases"} icon={<ShoppingCart size={18} />} label="Achats" onClick={() => goToDemoPage("purchases")} />
-              <NavButton active={activePage === "vat"} icon={<Scale size={18} />} label="Declaration TVA" onClick={() => goToDemoPage("vat")} />
+              <NavButton active={activePage === "bank"} icon={<CreditCard size={18} />} label="Banque" onClick={() => goToDemoPage("bank")} />
+              <NavButton active={activePage === "vat"} icon={<Scale size={18} />} label="TVA" onClick={() => goToDemoPage("vat")} />
               <NavButton active={activePage === "monthly"} icon={<CalendarDays size={18} />} label="Recap mensuel" onClick={() => goToDemoPage("monthly")} />
-              <NavButton active={activePage === "yearly"} icon={<ReceiptText size={18} />} label="Recap annuel" onClick={() => goToDemoPage("yearly")} />
             </nav>
           </div>
           <button className="ghost-button" onClick={logout} type="button">
@@ -414,13 +439,16 @@ export function App() {
 
         <section className="dashboard-content">
           {activePage === "dashboard" ? <Dashboard totals={totals} /> : null}
+          {activePage === "company" ? <CompanyDemoPage /> : null}
+          {activePage === "articles" ? <ArticlesDemoPage /> : null}
           {activePage === "clients" ? <DirectoryPage title="Clients" rows={clients} type="client" /> : null}
           {activePage === "suppliers" ? <DirectoryPage title="Fournisseurs" rows={suppliers} type="supplier" /> : null}
-          {activePage === "sales" ? <InvoicesPage title="Ventes" rows={sales} partyLabel="Client" partyKey="client" /> : null}
+          {activePage === "quotes" ? <InvoicesPage title="Devis" rows={quotes} partyLabel="Client" partyKey="client" /> : null}
+          {activePage === "invoices" ? <InvoicesPage title="Factures" rows={sales} partyLabel="Client" partyKey="client" /> : null}
           {activePage === "purchases" ? <InvoicesPage title="Achats" rows={purchases} partyLabel="Fournisseur" partyKey="supplier" /> : null}
+          {activePage === "bank" ? <BankDemoPage /> : null}
           {activePage === "vat" ? <VatPage totals={totals} /> : null}
           {activePage === "monthly" ? <MonthlyPage totals={totals} /> : null}
-          {activePage === "yearly" ? <YearlyPage /> : null}
         </section>
         <nav className="mobile-bottom-nav" aria-label="Navigation demo mobile">
           {primaryDemoPages.map((item) => (
@@ -656,7 +684,7 @@ function PageHeader(props: { title: string; subtitle: string }) {
 function Dashboard({ totals }: { totals: Totals }) {
   return (
     <>
-      <PageHeader title="Dashboard" subtitle="Vue mensuelle avril 2026 avec donnees de presentation." />
+      <PageHeader title="Dashboard" subtitle="Vue mensuelle avril 2026 avec factures, achats, TVA et tresorerie de presentation." />
       <div className="metrics-grid">
         <Metric label="CA du mois HT" value={formatEuro(totals.salesHt)} />
         <Metric label="Achats du mois HT" value={formatEuro(totals.purchasesHt)} />
@@ -664,13 +692,13 @@ function Dashboard({ totals }: { totals: Totals }) {
         <Metric label="Benefice estime" value={formatEuro(totals.profit)} />
       </div>
       <div className="chart-grid">
-        <ChartCard title="Ventes et achats mensuels">
+        <ChartCard title="Factures et achats mensuels">
           <BarChart data={monthlyData}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="month" />
             <YAxis />
             <Tooltip formatter={(value) => formatEuro(Number(value))} />
-            <Bar dataKey="sales" fill="#21725e" name="Ventes HT" />
+            <Bar dataKey="sales" fill="#21725e" name="Factures HT" />
             <Bar dataKey="purchases" fill="#d97706" name="Achats HT" />
           </BarChart>
         </ChartCard>
@@ -746,6 +774,76 @@ function DirectoryPage({ rows, title, type }: { rows: typeof clients; title: str
   );
 }
 
+function CompanyDemoPage() {
+  return (
+    <>
+      <PageHeader title="Entreprise" subtitle="Informations legales et coordonnees utilisees sur les factures." />
+      <div className="form-grid">
+        <label>
+          Nom de l'entreprise
+          <input readOnly value="Kobance Demo SAS" />
+        </label>
+        <label>
+          SIRET
+          <input readOnly value="812 456 903 00018" />
+        </label>
+        <label>
+          Numero TVA
+          <input readOnly value="FR 32 812456903" />
+        </label>
+        <label>
+          Adresse
+          <input readOnly value="12 rue de la Paix, 75002 Paris" />
+        </label>
+        <label>
+          Telephone
+          <input readOnly value="01 42 10 33 20" />
+        </label>
+        <label>
+          Email
+          <input readOnly value="contact@kobance.fr" />
+        </label>
+      </div>
+    </>
+  );
+}
+
+function ArticlesDemoPage() {
+  return (
+    <>
+      <PageHeader title="Articles" subtitle="Catalogue exemple pour remplir rapidement devis et factures." />
+      <div className="toolbar">
+        <input placeholder="Rechercher un article..." />
+        <button className="primary-button" type="button">Ajouter un article</button>
+      </div>
+      <div className="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Reference</th>
+              <th>Article</th>
+              <th>Description</th>
+              <th>Prix HT</th>
+              <th>TVA</th>
+            </tr>
+          </thead>
+          <tbody>
+            {articles.map((row) => (
+              <tr key={row.reference}>
+                <td>{row.reference}</td>
+                <td>{row.name}</td>
+                <td>{row.description}</td>
+                <td>{formatEuro(row.price)}</td>
+                <td>{row.vatRate} %</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
 type InvoiceRow = {
   date: string;
   client?: string;
@@ -758,9 +856,16 @@ type InvoiceRow = {
 };
 
 function InvoicesPage({ partyKey, partyLabel, rows, title }: { partyKey: "client" | "supplier"; partyLabel: string; rows: InvoiceRow[]; title: string }) {
+  const subtitle =
+    title === "Devis"
+      ? "Devis clients avec HT, TVA, TTC et statut de suivi."
+      : title === "Achats"
+        ? "Factures fournisseurs avec HT, TVA deductible, TTC et statut de paiement."
+        : "Factures clients avec HT, TVA, TTC, statut et suivi de paiement.";
+
   return (
     <>
-      <PageHeader title={title} subtitle="Factures avec HT, TVA, TTC, statut et filtres de presentation." />
+      <PageHeader title={title} subtitle={subtitle} />
       <div className="toolbar">
         <select defaultValue="04"><option value="04">Avril</option></select>
         <select defaultValue="2026"><option value="2026">2026</option></select>
@@ -798,13 +903,50 @@ function InvoicesPage({ partyKey, partyLabel, rows, title }: { partyKey: "client
   );
 }
 
+function BankDemoPage() {
+  return (
+    <>
+      <PageHeader title="Banque" subtitle="Mouvements bancaires exemples avec rapprochement facture ou achat." />
+      <div className="toolbar">
+        <select defaultValue="04"><option value="04">Avril</option></select>
+        <select defaultValue="2026"><option value="2026">2026</option></select>
+        <button className="primary-button" type="button">Ajouter un mouvement</button>
+      </div>
+      <div className="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Libelle</th>
+              <th>Type</th>
+              <th>Montant</th>
+              <th>Rapprochement</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bankTransactions.map((row) => (
+              <tr key={`${row.date}-${row.label}`}>
+                <td>{row.date}</td>
+                <td>{row.label}</td>
+                <td>{row.type}</td>
+                <td>{formatEuro(row.amount)}</td>
+                <td><span className="badge">{row.reconciliation}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
 function MonthlyPage({ totals }: { totals: Totals }) {
   return (
     <>
       <PageHeader title="Recap mensuel" subtitle="Avril 2026 : synthese TVA, chiffre d'affaires, achats et benefice." />
       <div className="summary-grid">
-        <Metric label="Ventes HT" value={formatEuro(totals.salesHt)} />
-        <Metric label="Ventes TTC" value={formatEuro(totals.salesTtc)} />
+        <Metric label="Factures HT" value={formatEuro(totals.salesHt)} />
+        <Metric label="Factures TTC" value={formatEuro(totals.salesTtc)} />
         <Metric label="TVA collectee" value={formatEuro(totals.collectedVat)} />
         <Metric label="Achats HT" value={formatEuro(totals.purchasesHt)} />
         <Metric label="Achats TTC" value={formatEuro(totals.purchasesTtc)} />
@@ -812,7 +954,7 @@ function MonthlyPage({ totals }: { totals: Totals }) {
         <Metric label="TVA a payer" value={formatEuro(totals.vatDue)} />
         <Metric label="Benefice estime" value={formatEuro(totals.profit)} />
       </div>
-      <InvoicesPage title="Detail ventes du mois" rows={sales} partyLabel="Client" partyKey="client" />
+      <InvoicesPage title="Detail factures du mois" rows={sales} partyLabel="Client" partyKey="client" />
       <InvoicesPage title="Detail achats du mois" rows={purchases} partyLabel="Fournisseur" partyKey="supplier" />
     </>
   );
