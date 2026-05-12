@@ -7,6 +7,7 @@ import {
   FileText,
   LockKeyhole,
   LogOut,
+  MoreHorizontal,
   ReceiptText,
   Scale,
   ShoppingCart,
@@ -98,6 +99,7 @@ const formatEuro = (value: number) =>
 export function App() {
   const [mode, setMode] = useState<AuthMode>("login");
   const [activePage, setActivePage] = useState<DemoPage>("dashboard");
+  const [demoMoreOpen, setDemoMoreOpen] = useState(false);
   const [name, setName] = useState("");
   const [siret, setSiret] = useState("");
   const [email, setEmail] = useState("");
@@ -326,6 +328,7 @@ export function App() {
     setNewPassword("");
     setSiret("");
     setActivePage("dashboard");
+    setDemoMoreOpen(false);
   }
 
   function startDemo() {
@@ -351,22 +354,56 @@ export function App() {
       return <RealWorkspace onLogout={logout} userEmail={user.email} userId={user.id} userName={user.name ?? user.email} />;
     }
 
+    const primaryDemoPages: Array<{ page: DemoPage; icon: ReactNode; label: string }> = [
+      { page: "dashboard", icon: <BarChart3 size={20} />, label: "Accueil" },
+      { page: "sales", icon: <FileText size={20} />, label: "Ventes" },
+      { page: "purchases", icon: <ShoppingCart size={20} />, label: "Achats" },
+      { page: "vat", icon: <Scale size={20} />, label: "TVA" }
+    ];
+    const secondaryDemoPages: Array<{ page: DemoPage; icon: ReactNode; label: string }> = [
+      { page: "clients", icon: <Users size={20} />, label: "Clients" },
+      { page: "suppliers", icon: <Building2 size={20} />, label: "Fournisseurs" },
+      { page: "monthly", icon: <CalendarDays size={20} />, label: "Mensuel" },
+      { page: "yearly", icon: <ReceiptText size={20} />, label: "Annuel" }
+    ];
+    const currentDemoPageLabel =
+      primaryDemoPages.find((item) => item.page === activePage)?.label ??
+      secondaryDemoPages.find((item) => item.page === activePage)?.label ??
+      "Demo";
+    const goToDemoPage = (nextPage: DemoPage) => {
+      setActivePage(nextPage);
+      setDemoMoreOpen(false);
+    };
+
     return (
       <main className="app-shell dashboard-shell">
+        <header className="mobile-app-header">
+          <div className="mobile-brand">
+            <img alt="" src="/icon-192.png" />
+            <div>
+              <strong>Kobance</strong>
+              <span>Demo - {currentDemoPageLabel}</span>
+            </div>
+          </div>
+          <button className="mobile-header-button" onClick={() => setDemoMoreOpen(true)} type="button">
+            <MoreHorizontal size={22} />
+            Plus
+          </button>
+        </header>
         <aside className="sidebar">
           <div>
             <p className="brand">Kobance</p>
             <p className="muted">Votre compta, sans prise de tete.</p>
             <p className="muted">Demo TPE France</p>
             <nav className="nav-list">
-              <NavButton active={activePage === "dashboard"} icon={<BarChart3 size={18} />} label="Dashboard" onClick={() => setActivePage("dashboard")} />
-              <NavButton active={activePage === "clients"} icon={<Users size={18} />} label="Clients" onClick={() => setActivePage("clients")} />
-              <NavButton active={activePage === "suppliers"} icon={<Building2 size={18} />} label="Fournisseurs" onClick={() => setActivePage("suppliers")} />
-              <NavButton active={activePage === "sales"} icon={<FileText size={18} />} label="Ventes" onClick={() => setActivePage("sales")} />
-              <NavButton active={activePage === "purchases"} icon={<ShoppingCart size={18} />} label="Achats" onClick={() => setActivePage("purchases")} />
-              <NavButton active={activePage === "vat"} icon={<Scale size={18} />} label="Declaration TVA" onClick={() => setActivePage("vat")} />
-              <NavButton active={activePage === "monthly"} icon={<CalendarDays size={18} />} label="Recap mensuel" onClick={() => setActivePage("monthly")} />
-              <NavButton active={activePage === "yearly"} icon={<ReceiptText size={18} />} label="Recap annuel" onClick={() => setActivePage("yearly")} />
+              <NavButton active={activePage === "dashboard"} icon={<BarChart3 size={18} />} label="Dashboard" onClick={() => goToDemoPage("dashboard")} />
+              <NavButton active={activePage === "clients"} icon={<Users size={18} />} label="Clients" onClick={() => goToDemoPage("clients")} />
+              <NavButton active={activePage === "suppliers"} icon={<Building2 size={18} />} label="Fournisseurs" onClick={() => goToDemoPage("suppliers")} />
+              <NavButton active={activePage === "sales"} icon={<FileText size={18} />} label="Ventes" onClick={() => goToDemoPage("sales")} />
+              <NavButton active={activePage === "purchases"} icon={<ShoppingCart size={18} />} label="Achats" onClick={() => goToDemoPage("purchases")} />
+              <NavButton active={activePage === "vat"} icon={<Scale size={18} />} label="Declaration TVA" onClick={() => goToDemoPage("vat")} />
+              <NavButton active={activePage === "monthly"} icon={<CalendarDays size={18} />} label="Recap mensuel" onClick={() => goToDemoPage("monthly")} />
+              <NavButton active={activePage === "yearly"} icon={<ReceiptText size={18} />} label="Recap annuel" onClick={() => goToDemoPage("yearly")} />
             </nav>
           </div>
           <button className="ghost-button" onClick={logout} type="button">
@@ -385,6 +422,48 @@ export function App() {
           {activePage === "monthly" ? <MonthlyPage totals={totals} /> : null}
           {activePage === "yearly" ? <YearlyPage /> : null}
         </section>
+        <nav className="mobile-bottom-nav" aria-label="Navigation demo mobile">
+          {primaryDemoPages.map((item) => (
+            <button className={activePage === item.page ? "active" : ""} key={item.page} onClick={() => goToDemoPage(item.page)} type="button">
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+          <button className={demoMoreOpen || secondaryDemoPages.some((item) => item.page === activePage) ? "active" : ""} onClick={() => setDemoMoreOpen(true)} type="button">
+            <MoreHorizontal size={20} />
+            <span>Plus</span>
+          </button>
+        </nav>
+        {demoMoreOpen ? (
+          <div className="mobile-more-backdrop" onClick={() => setDemoMoreOpen(false)} role="presentation">
+            <section className="mobile-more-sheet" onClick={(event) => event.stopPropagation()}>
+              <div className="mobile-more-header">
+                <div className="mobile-brand">
+                  <img alt="" src="/icon-192.png" />
+                  <div>
+                    <strong>Kobance</strong>
+                    <span>Demo</span>
+                  </div>
+                </div>
+                <button className="mobile-header-button" onClick={() => setDemoMoreOpen(false)} type="button">
+                  Fermer
+                </button>
+              </div>
+              <div className="mobile-more-grid">
+                {secondaryDemoPages.map((item) => (
+                  <button className={activePage === item.page ? "active" : ""} key={item.page} onClick={() => goToDemoPage(item.page)} type="button">
+                    {item.icon}
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+                <button className="logout-mobile-button" onClick={logout} type="button">
+                  <LogOut size={20} />
+                  <span>Retour</span>
+                </button>
+              </div>
+            </section>
+          </div>
+        ) : null}
       </main>
     );
   }
