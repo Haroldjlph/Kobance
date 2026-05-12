@@ -2485,7 +2485,6 @@ function InvoicesPage(props: {
                     {invoice.status === "ISSUED" ? <button className="primary-button" onClick={() => props.onStatusChange(invoice, "PAID")} type="button">Payée</button> : null}
                     {(invoice.status === "ISSUED" || invoice.status === "PAID") ? <button className="link-button" onClick={() => props.onCreditNote(invoice)} type="button">Avoir</button> : null}
                     {invoice.status !== "PAID" && invoice.status !== "CANCELED" ? <button className="danger-button" onClick={() => props.onStatusChange(invoice, "CANCELED")} type="button">Annuler</button> : null}
-                    {invoice.status === "DRAFT" ? <button className="danger-button" onClick={() => props.onDelete(invoice.id)} type="button">Supprimer</button> : null}
                   </div>
                 </td>
               </tr>
