@@ -317,6 +317,40 @@ function calculateLineAmounts(quantity: string, unitPriceHt: string, vatRate: st
   return calculateSaleAmounts(String(baseHt), vatRate, discountType, discountValue);
 }
 
+const namePattern = /^[A-Za-zÀ-ÖØ-öø-ÿ' -]+$/;
+const siretPattern = /^\d{14}$/;
+const frenchVatPattern = /^FR[A-Z0-9]{2}\d{9}$/;
+const positiveIntegerPattern = /^[1-9]\d*$/;
+
+function normalizeSiret(value: string) {
+  return value.replace(/\s/g, "");
+}
+
+function normalizeFrenchVat(value: string) {
+  return value.replace(/\s/g, "").toUpperCase();
+}
+
+function isValidName(value: string) {
+  return namePattern.test(value.trim());
+}
+
+function isValidSiret(value: string) {
+  return siretPattern.test(normalizeSiret(value));
+}
+
+function isValidFrenchVat(value: string) {
+  const normalized = normalizeFrenchVat(value);
+  return normalized === "" || frenchVatPattern.test(normalized);
+}
+
+function isPositiveInteger(value: string) {
+  return positiveIntegerPattern.test(value);
+}
+
+function isValidEmail(value: string) {
+  return value === "" || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
 function supportWhatsappUrl() {
   if (!supportWhatsappNumber) {
     return "";
@@ -936,8 +970,30 @@ export function RealWorkspace({
   }, [bankTransactions, creditNotes, invoiceDocuments, purchases]);
 
   async function createParty(table: "clients" | "suppliers", form: typeof emptyParty) {
+    if (!isValidName(form.name)) {
+      setError("Le nom ne doit contenir que des lettres, espaces, tirets ou apostrophes.");
+      return;
+    }
+
+    if (!isValidEmail(form.email)) {
+      setError("L'email doit respecter le format exemple@mail.com.");
+      return;
+    }
+
+    if (form.siret && !isValidSiret(form.siret)) {
+      setError("Le SIRET doit contenir exactement 14 chiffres.");
+      return;
+    }
+
+    if (!isValidFrenchVat(form.vat_number)) {
+      setError("Le numero de TVA doit respecter le format francais, par exemple FR12345678901.");
+      return;
+    }
+
     const { error: insertError } = await supabase.from(table).insert({
       ...form,
+      siret: form.siret ? normalizeSiret(form.siret) : "",
+      vat_number: form.vat_number ? normalizeFrenchVat(form.vat_number) : "",
       user_id: currentCompanyUserId
     });
 
@@ -950,7 +1006,31 @@ export function RealWorkspace({
   }
 
   async function updateParty(table: "clients" | "suppliers", id: string, form: typeof emptyParty) {
-    const { error: updateError } = await supabase.from(table).update(form).eq("id", id);
+    if (!isValidName(form.name)) {
+      setError("Le nom ne doit contenir que des lettres, espaces, tirets ou apostrophes.");
+      return;
+    }
+
+    if (!isValidEmail(form.email)) {
+      setError("L'email doit respecter le format exemple@mail.com.");
+      return;
+    }
+
+    if (form.siret && !isValidSiret(form.siret)) {
+      setError("Le SIRET doit contenir exactement 14 chiffres.");
+      return;
+    }
+
+    if (!isValidFrenchVat(form.vat_number)) {
+      setError("Le numero de TVA doit respecter le format francais, par exemple FR12345678901.");
+      return;
+    }
+
+    const { error: updateError } = await supabase.from(table).update({
+      ...form,
+      siret: form.siret ? normalizeSiret(form.siret) : "",
+      vat_number: form.vat_number ? normalizeFrenchVat(form.vat_number) : ""
+    }).eq("id", id);
 
     if (updateError) {
       setError(displaySupabaseError(updateError.message));
@@ -961,6 +1041,11 @@ export function RealWorkspace({
   }
 
   async function createArticle(form: typeof emptyArticle) {
+    if (!isValidName(form.name)) {
+      setError("Le nom de l'article ne doit contenir que des lettres, espaces, tirets ou apostrophes.");
+      return;
+    }
+
     const { error: insertError } = await supabase.from("articles").insert({
       user_id: currentCompanyUserId,
       reference: form.reference || null,
@@ -979,6 +1064,11 @@ export function RealWorkspace({
   }
 
   async function updateArticle(id: string, form: typeof emptyArticle) {
+    if (!isValidName(form.name)) {
+      setError("Le nom de l'article ne doit contenir que des lettres, espaces, tirets ou apostrophes.");
+      return;
+    }
+
     const { error: updateError } = await supabase.from("articles").update({
       reference: form.reference || null,
       name: form.name,
@@ -1119,11 +1209,26 @@ export function RealWorkspace({
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
+    if (!isValidName(profileForm.company_name)) {
+      setError("Le nom de l'entreprise ne doit contenir que des lettres, espaces, tirets ou apostrophes.");
+      return;
+    }
+
+    if (!isValidSiret(profileForm.siret)) {
+      setError("Le SIRET doit contenir exactement 14 chiffres.");
+      return;
+    }
+
+    if (!isValidFrenchVat(profileForm.vat_number)) {
+      setError("Le numero de TVA doit respecter le format francais, par exemple FR12345678901.");
+      return;
+    }
+
     const { error: upsertError } = await supabase.from("profiles").upsert({
       user_id: currentCompanyUserId,
       company_name: profileForm.company_name,
-      siret: profileForm.siret.replace(/\s/g, ""),
-      vat_number: profileForm.vat_number || null,
+      siret: normalizeSiret(profileForm.siret),
+      vat_number: profileForm.vat_number ? normalizeFrenchVat(profileForm.vat_number) : null,
       address: profileForm.address || null,
       phone: profileForm.phone || null,
       logo_data_url: profileForm.logo_data_url || null
@@ -1148,6 +1253,11 @@ export function RealWorkspace({
     const email = memberEmail.trim().toLowerCase();
 
     if (!email) {
+      return;
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setError("L'email doit respecter le format exemple@mail.com.");
       return;
     }
 
@@ -1264,6 +1374,11 @@ export function RealWorkspace({
 
     if (!selectedQuoteId) {
       setError("Selectionnez un devis avant d'ajouter une ligne.");
+      return;
+    }
+
+    if (!isPositiveInteger(quoteLineForm.quantity)) {
+      setError("La quantite doit etre un nombre entier positif, par exemple 1 ou 2. Les valeurs comme 0.5 ne sont pas acceptees.");
       return;
     }
 
@@ -1404,6 +1519,11 @@ export function RealWorkspace({
 
     if (!selectedInvoiceId) {
       setError("Selectionnez une facture avant d'ajouter une ligne.");
+      return;
+    }
+
+    if (!isPositiveInteger(invoiceLineForm.quantity)) {
+      setError("La quantite doit etre un nombre entier positif, par exemple 1 ou 2. Les valeurs comme 0.5 ne sont pas acceptees.");
       return;
     }
 
@@ -1589,8 +1709,46 @@ export function RealWorkspace({
     await loadData();
   }
 
+  function validatePartyForm(form: typeof emptyParty) {
+    if (!isValidName(form.name)) {
+      setError("Le nom ne doit contenir que des lettres, espaces, tirets ou apostrophes.");
+      return false;
+    }
+
+    if (!isValidEmail(form.email)) {
+      setError("L'email doit respecter le format exemple@mail.com.");
+      return false;
+    }
+
+    if (form.siret && !isValidSiret(form.siret)) {
+      setError("Le SIRET doit contenir exactement 14 chiffres.");
+      return false;
+    }
+
+    if (!isValidFrenchVat(form.vat_number)) {
+      setError("Le numero de TVA doit respecter le format francais, par exemple FR12345678901.");
+      return false;
+    }
+
+    return true;
+  }
+
+  function validateArticleForm(form: typeof emptyArticle) {
+    if (!isValidName(form.name)) {
+      setError("Le nom de l'article ne doit contenir que des lettres, espaces, tirets ou apostrophes.");
+      return false;
+    }
+
+    return true;
+  }
+
   function submitClient(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (!validatePartyForm(clientForm)) {
+      return;
+    }
+
     const action = editingClientId
       ? updateParty("clients", editingClientId, clientForm)
       : createParty("clients", clientForm);
@@ -1603,6 +1761,11 @@ export function RealWorkspace({
 
   function submitSupplier(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (!validatePartyForm(supplierForm)) {
+      return;
+    }
+
     const action = editingSupplierId
       ? updateParty("suppliers", editingSupplierId, supplierForm)
       : createParty("suppliers", supplierForm);
@@ -1615,6 +1778,11 @@ export function RealWorkspace({
 
   function submitArticle(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (!validateArticleForm(articleForm)) {
+      return;
+    }
+
     const action = editingArticleId
       ? updateArticle(editingArticleId, articleForm)
       : createArticle(articleForm);
@@ -2042,8 +2210,10 @@ function CompanyPage(props: {
       />
       <form className="form-grid" onSubmit={props.onSubmit}>
         <input
+          pattern="[A-Za-zÀ-ÖØ-öø-ÿ' -]+"
           placeholder="Raison sociale"
           required
+          title="Lettres, espaces, tirets et apostrophes uniquement."
           value={props.form.company_name}
           onChange={(event) => props.onChange({ ...props.form, company_name: event.target.value })}
         />
@@ -2051,13 +2221,17 @@ function CompanyPage(props: {
           inputMode="numeric"
           maxLength={17}
           minLength={14}
+          pattern="[0-9 ]{14,17}"
           placeholder="SIRET"
           required
+          title="SIRET attendu : 14 chiffres, espaces autorises."
           value={props.form.siret}
           onChange={(event) => props.onChange({ ...props.form, siret: event.target.value })}
         />
         <input
+          pattern="[Ff][Rr][A-Za-z0-9]{2}[0-9]{9}"
           placeholder="Numero TVA"
+          title="Numero TVA francais attendu : FR + 2 caracteres + 9 chiffres, exemple FR12345678901."
           value={props.form.vat_number}
           onChange={(event) => props.onChange({ ...props.form, vat_number: event.target.value })}
         />
@@ -2068,6 +2242,7 @@ function CompanyPage(props: {
         />
         <input
           placeholder="Telephone"
+          type="tel"
           value={props.form.phone}
           onChange={(event) => props.onChange({ ...props.form, phone: event.target.value })}
         />
@@ -2177,9 +2352,9 @@ function ArticlesPage(props: {
       />
       <form className="form-grid" onSubmit={props.onSubmit}>
         <input placeholder="Reference" value={props.form.reference} onChange={(event) => props.onChange({ ...props.form, reference: event.target.value })} />
-        <input placeholder="Nom article" required value={props.form.name} onChange={(event) => props.onChange({ ...props.form, name: event.target.value })} />
+        <input pattern="[A-Za-zÀ-ÖØ-öø-ÿ' -]+" placeholder="Nom article" required title="Lettres, espaces, tirets et apostrophes uniquement." value={props.form.name} onChange={(event) => props.onChange({ ...props.form, name: event.target.value })} />
         <input placeholder="Description" value={props.form.description} onChange={(event) => props.onChange({ ...props.form, description: event.target.value })} />
-        <input placeholder="Prix HT" required step="0.01" type="number" value={props.form.unit_price_ht} onChange={(event) => props.onChange({ ...props.form, unit_price_ht: event.target.value })} />
+        <input min="0" placeholder="Prix HT" required step="0.01" type="number" value={props.form.unit_price_ht} onChange={(event) => props.onChange({ ...props.form, unit_price_ht: event.target.value })} />
         <select value={props.form.vat_rate} onChange={(event) => props.onChange({ ...props.form, vat_rate: event.target.value })}>
           <option value="0">TVA 0 %</option>
           <option value="5.5">TVA 5,5 %</option>
@@ -2342,7 +2517,7 @@ function InvoicesPage(props: {
               ))}
             </select>
             <input required placeholder="Description" value={props.lineForm.description} onChange={(event) => props.onLineChange({ ...props.lineForm, description: event.target.value })} />
-            <input min="0.01" required step="0.01" type="number" value={props.lineForm.quantity} onChange={(event) => props.onLineChange({ ...props.lineForm, quantity: event.target.value })} />
+            <input inputMode="numeric" min="1" pattern="[1-9][0-9]*" required step="1" title="Quantite entiere uniquement : 1, 2, 3..." type="number" value={props.lineForm.quantity} onChange={(event) => props.onLineChange({ ...props.lineForm, quantity: event.target.value })} />
             <input min="0" required placeholder="Prix unitaire HT" step="0.01" type="number" value={props.lineForm.unitPriceHt} onChange={(event) => props.onLineChange({ ...props.lineForm, unitPriceHt: event.target.value })} />
             <select value={props.lineForm.vatRate} onChange={(event) => props.onLineChange({ ...props.lineForm, vatRate: event.target.value })}>
               <option value="0">TVA 0 %</option>
@@ -2485,7 +2660,7 @@ function QuotesPage(props: {
               ))}
             </select>
             <input required placeholder="Description" value={props.lineForm.description} onChange={(event) => props.onLineChange({ ...props.lineForm, description: event.target.value })} />
-            <input min="0.01" required step="0.01" type="number" value={props.lineForm.quantity} onChange={(event) => props.onLineChange({ ...props.lineForm, quantity: event.target.value })} />
+            <input inputMode="numeric" min="1" pattern="[1-9][0-9]*" required step="1" title="Quantite entiere uniquement : 1, 2, 3..." type="number" value={props.lineForm.quantity} onChange={(event) => props.onLineChange({ ...props.lineForm, quantity: event.target.value })} />
             <input min="0" required placeholder="Prix unitaire HT" step="0.01" type="number" value={props.lineForm.unitPriceHt} onChange={(event) => props.onLineChange({ ...props.lineForm, unitPriceHt: event.target.value })} />
             <select value={props.lineForm.vatRate} onChange={(event) => props.onLineChange({ ...props.lineForm, vatRate: event.target.value })}>
               <option value="0">TVA 0 %</option>
@@ -2698,12 +2873,12 @@ function PartyPage(props: {
         }
       />
       <form className="form-grid" onSubmit={props.onSubmit}>
-        <input placeholder="Nom" required value={props.form.name} onChange={(e) => props.onChange({ ...props.form, name: e.target.value })} />
-        <input placeholder="Email" value={props.form.email} onChange={(e) => props.onChange({ ...props.form, email: e.target.value })} />
-        <input placeholder="Telephone" value={props.form.phone} onChange={(e) => props.onChange({ ...props.form, phone: e.target.value })} />
+        <input pattern="[A-Za-zÀ-ÖØ-öø-ÿ' -]+" placeholder="Nom" required title="Lettres, espaces, tirets et apostrophes uniquement." value={props.form.name} onChange={(e) => props.onChange({ ...props.form, name: e.target.value })} />
+        <input placeholder="Email" type="email" value={props.form.email} onChange={(e) => props.onChange({ ...props.form, email: e.target.value })} />
+        <input placeholder="Telephone" type="tel" value={props.form.phone} onChange={(e) => props.onChange({ ...props.form, phone: e.target.value })} />
         <input placeholder="Adresse" value={props.form.address} onChange={(e) => props.onChange({ ...props.form, address: e.target.value })} />
-        <input placeholder="SIRET" value={props.form.siret} onChange={(e) => props.onChange({ ...props.form, siret: e.target.value })} />
-        <input placeholder="Numero TVA" value={props.form.vat_number} onChange={(e) => props.onChange({ ...props.form, vat_number: e.target.value })} />
+        <input inputMode="numeric" maxLength={17} pattern="[0-9 ]{14,17}" placeholder="SIRET" title="SIRET attendu : 14 chiffres, espaces autorises." value={props.form.siret} onChange={(e) => props.onChange({ ...props.form, siret: e.target.value })} />
+        <input pattern="[Ff][Rr][A-Za-z0-9]{2}[0-9]{9}" placeholder="Numero TVA" title="Numero TVA francais attendu : FR + 2 caracteres + 9 chiffres, exemple FR12345678901." value={props.form.vat_number} onChange={(e) => props.onChange({ ...props.form, vat_number: e.target.value })} />
         <button className="primary-button" type="submit">{props.editingId ? "Enregistrer" : "Ajouter"}</button>
         {props.editingId ? <button className="link-button" onClick={props.onCancel} type="button">Annuler</button> : null}
       </form>

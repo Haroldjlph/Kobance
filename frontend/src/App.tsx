@@ -115,6 +115,9 @@ const vatByRate = [
 const formatEuro = (value: number) =>
   new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
 
+const authNamePattern = /^[A-Za-zÀ-ÖØ-öø-ÿ' -]+$/;
+const authSiretPattern = /^\d{14}$/;
+
 export function App() {
   const [mode, setMode] = useState<AuthMode>("login");
   const [activePage, setActivePage] = useState<DemoPage>("dashboard");
@@ -263,6 +266,18 @@ export function App() {
         setNewPassword("");
         await supabase.auth.signOut();
         return;
+      }
+
+      if (mode === "register") {
+        if (!authNamePattern.test(name.trim())) {
+          setMessage("Le nom ne doit contenir que des lettres, espaces, tirets ou apostrophes.");
+          return;
+        }
+
+        if (!authSiretPattern.test(siret.replace(/\s/g, ""))) {
+          setMessage("Le SIRET doit contenir exactement 14 chiffres.");
+          return;
+        }
       }
 
       const response =
@@ -568,7 +583,7 @@ export function App() {
           {mode === "register" ? (
             <label>
               Nom
-              <input autoComplete="name" onChange={(event) => setName(event.target.value)} type="text" value={name} />
+              <input autoComplete="name" onChange={(event) => setName(event.target.value)} pattern="[A-Za-zÀ-ÖØ-öø-ÿ' -]+" title="Lettres, espaces, tirets et apostrophes uniquement." type="text" value={name} />
             </label>
           ) : null}
 
@@ -579,9 +594,11 @@ export function App() {
                 inputMode="numeric"
                 maxLength={17}
                 minLength={14}
+                pattern="[0-9 ]{14,17}"
                 onChange={(event) => setSiret(event.target.value)}
                 placeholder="14 chiffres"
                 required
+                title="SIRET attendu : 14 chiffres, espaces autorises."
                 type="text"
                 value={siret}
               />
