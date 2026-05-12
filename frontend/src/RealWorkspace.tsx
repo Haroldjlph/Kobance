@@ -367,6 +367,22 @@ function downloadCsv(filename: string, headers: string[], rows: unknown[][]) {
   URL.revokeObjectURL(url);
 }
 
+function openPrintableHtml(html: string) {
+  const win = window.open("", "_blank");
+
+  if (win) {
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    return;
+  }
+
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  window.location.assign(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
 function displaySupabaseError(message: string) {
   if (message.toLowerCase().includes("row-level security")) {
     return `Acces refuse par Supabase RLS. Verifiez que le SQL a ete rejoue et que vous etes reconnecte. Detail : ${message}`;
@@ -441,11 +457,17 @@ function generateInvoiceDocument(row: Sale, client: Party | undefined, profile: 
     .totals { margin-left: auto; margin-top: 24px; width: 320px; }
     .total-row { display: flex; justify-content: space-between; padding: 8px 0; }
     .grand { border-top: 2px solid #18202f; font-size: 18px; font-weight: 700; }
-    @media print { body { margin: 24px; } button { display: none; } }
+    .document-actions { display: flex; gap: 10px; margin-bottom: 28px; }
+    .document-actions button { background: #21725e; border: 0; border-radius: 8px; color: #fff; cursor: pointer; font-weight: 700; padding: 12px 16px; }
+    .document-actions .secondary { background: #eef4ff; color: #1849a9; }
+    @media print { body { margin: 24px; } .document-actions { display: none; } }
   </style>
 </head>
 <body>
-  <button onclick="window.print()">Imprimer / Enregistrer en PDF</button>
+  <div class="document-actions">
+    <button onclick="window.print()">Imprimer / Enregistrer en PDF</button>
+    <button class="secondary" onclick="if (window.opener) { window.close(); } else { history.back(); }">Retour a Kobance</button>
+  </div>
   <div class="top">
     <div>
       ${profile?.logo_data_url ? `<img class="logo" src="${profile.logo_data_url}" alt="Logo" />` : ""}
@@ -495,14 +517,7 @@ function generateInvoiceDocument(row: Sale, client: Party | undefined, profile: 
   </div>
 </body>
 </html>`;
-  const win = window.open("", "_blank");
-
-  if (!win) {
-    return;
-  }
-
-  win.document.write(html);
-  win.document.close();
+  openPrintableHtml(html);
 }
 
 function generateInvoiceDocumentFromLines(invoice: InvoiceDocument, profile: Profile | null) {
@@ -545,11 +560,17 @@ function generateInvoiceDocumentFromLines(invoice: InvoiceDocument, profile: Pro
     .totals { margin-left: auto; margin-top: 24px; width: 320px; }
     .total-row { display: flex; justify-content: space-between; padding: 8px 0; }
     .grand { border-top: 2px solid #18202f; font-size: 18px; font-weight: 700; }
-    @media print { body { margin: 24px; } button { display: none; } }
+    .document-actions { display: flex; gap: 10px; margin-bottom: 28px; }
+    .document-actions button { background: #21725e; border: 0; border-radius: 8px; color: #fff; cursor: pointer; font-weight: 700; padding: 12px 16px; }
+    .document-actions .secondary { background: #eef4ff; color: #1849a9; }
+    @media print { body { margin: 24px; } .document-actions { display: none; } }
   </style>
 </head>
 <body>
-  <button onclick="window.print()">Imprimer / Enregistrer en PDF</button>
+  <div class="document-actions">
+    <button onclick="window.print()">Imprimer / Enregistrer en PDF</button>
+    <button class="secondary" onclick="if (window.opener) { window.close(); } else { history.back(); }">Retour a Kobance</button>
+  </div>
   <div class="top">
     <div>
       ${profile?.logo_data_url ? `<img class="logo" src="${profile.logo_data_url}" alt="Logo" />` : ""}
@@ -586,14 +607,7 @@ function generateInvoiceDocumentFromLines(invoice: InvoiceDocument, profile: Pro
   ${invoice.notes ? `<div class="box"><h2>Notes</h2><p>${invoice.notes}</p></div>` : ""}
 </body>
 </html>`;
-  const win = window.open("", "_blank");
-
-  if (!win) {
-    return;
-  }
-
-  win.document.write(html);
-  win.document.close();
+  openPrintableHtml(html);
 }
 
 function generateQuoteDocumentFromLines(quote: QuoteDocument, profile: Profile | null) {
@@ -659,11 +673,17 @@ function generateCreditNoteDocument(creditNote: CreditNote, profile: Profile | n
     .totals { margin-left: auto; margin-top: 24px; width: 320px; }
     .total-row { display: flex; justify-content: space-between; padding: 8px 0; }
     .grand { border-top: 2px solid #18202f; font-size: 18px; font-weight: 700; }
-    @media print { body { margin: 24px; } button { display: none; } }
+    .document-actions { display: flex; gap: 10px; margin-bottom: 28px; }
+    .document-actions button { background: #21725e; border: 0; border-radius: 8px; color: #fff; cursor: pointer; font-weight: 700; padding: 12px 16px; }
+    .document-actions .secondary { background: #eef4ff; color: #1849a9; }
+    @media print { body { margin: 24px; } .document-actions { display: none; } }
   </style>
 </head>
 <body>
-  <button onclick="window.print()">Imprimer / Enregistrer en PDF</button>
+  <div class="document-actions">
+    <button onclick="window.print()">Imprimer / Enregistrer en PDF</button>
+    <button class="secondary" onclick="if (window.opener) { window.close(); } else { history.back(); }">Retour a Kobance</button>
+  </div>
   <div class="top">
     <div>
       ${profile?.logo_data_url ? `<img class="logo" src="${profile.logo_data_url}" alt="Logo" />` : ""}
@@ -702,14 +722,7 @@ function generateCreditNoteDocument(creditNote: CreditNote, profile: Profile | n
   </div>
 </body>
 </html>`;
-  const win = window.open("", "_blank");
-
-  if (!win) {
-    return;
-  }
-
-  win.document.write(html);
-  win.document.close();
+  openPrintableHtml(html);
 }
 
 export function RealWorkspace({

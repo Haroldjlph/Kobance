@@ -27,7 +27,7 @@ import {
 import { RealWorkspace } from "./RealWorkspace";
 import { isSupabaseConfigured, supabase } from "./supabase";
 
-type AuthMode = "login" | "register";
+type AuthMode = "login" | "register" | "forgot" | "recovery";
 type DemoPage = "dashboard" | "clients" | "suppliers" | "sales" | "purchases" | "vat" | "monthly" | "yearly";
 
 type BeforeInstallPromptEvent = Event & {
@@ -102,6 +102,7 @@ export function App() {
   const [siret, setSiret] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -109,10 +110,19 @@ export function App() {
   const [isStandalone, setIsStandalone] = useState(false);
 
   useEffect(() => {
+    const recoveryUrl =
+      window.location.hash.includes("type=recovery") ||
+      window.location.search.includes("type=recovery");
+
+    if (recoveryUrl) {
+      setMode("recovery");
+      setMessage("Choisissez votre nouveau mot de passe.");
+    }
+
     supabase.auth.getSession().then(({ data }) => {
       const sessionUser = data.session?.user;
 
-      if (sessionUser) {
+      if (sessionUser && !recoveryUrl) {
         setUser({
           id: sessionUser.id,
           email: sessionUser.email ?? "",
@@ -121,7 +131,14 @@ export function App() {
       }
     });
 
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setMode("recovery");
+        setUser(null);
+        setMessage("Choisissez votre nouveau mot de passe.");
+        return;
+      }
+
       if (!session?.user) {
         setUser(null);
         return;
@@ -194,6 +211,36 @@ export function App() {
     try {
       if (!isSupabaseConfigured) {
         setMessage("Supabase n'est pas configure.");
+        return;
+      }
+
+      if (mode === "forgot") {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin
+        });
+
+        if (error) {
+          setMessage(error.message);
+          return;
+        }
+
+        setMessage("Un email de reinitialisation vient d'etre envoye si ce compte existe.");
+        return;
+      }
+
+      if (mode === "recovery") {
+        const { error } = await supabase.auth.updateUser({ password: newPassword });
+
+        if (error) {
+          setMessage(error.message);
+          return;
+        }
+
+        setMessage("Mot de passe modifie. Vous pouvez maintenant vous connecter.");
+        setMode("login");
+        setPassword("");
+        setNewPassword("");
+        await supabase.auth.signOut();
         return;
       }
 
@@ -276,6 +323,7 @@ export function App() {
     void supabase.auth.signOut();
     setUser(null);
     setPassword("");
+    setNewPassword("");
     setSiret("");
     setActivePage("dashboard");
   }
@@ -387,13 +435,25 @@ export function App() {
           </div>
 
           <div className="form-heading">
-            {mode === "login" ? <LockKeyhole size={24} /> : <UserPlus size={24} />}
+            {mode === "register" ? <UserPlus size={24} /> : <LockKeyhole size={24} />}
             <div>
-              <h2>{mode === "login" ? "Connexion" : "Inscription"}</h2>
+              <h2>
+                {mode === "register"
+                  ? "Inscription"
+                  : mode === "forgot"
+                    ? "Mot de passe oublie"
+                    : mode === "recovery"
+                      ? "Nouveau mot de passe"
+                      : "Connexion"}
+              </h2>
               <p>
-                {mode === "login"
-                  ? "Accedez a votre espace comptable."
-                  : "Creez votre premier compte utilisateur."}
+                {mode === "register"
+                  ? "Creez votre premier compte utilisateur."
+                  : mode === "forgot"
+                    ? "Recevez un lien securise par email."
+                    : mode === "recovery"
+                      ? "Definissez un nouveau mot de passe."
+                      : "Accedez a votre espace comptable."}
               </p>
             </div>
           </div>
@@ -423,30 +483,62 @@ export function App() {
 
           <label>
             Email
-            <input autoComplete="email" onChange={(event) => setEmail(event.target.value)} required type="email" value={email} />
+            <input autoComplete="email" disabled={mode === "recovery"} onChange={(event) => setEmail(event.target.value)} required={mode !== "recovery"} type="email" value={email} />
           </label>
 
-          <label>
-            Mot de passe
-            <input autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} onChange={(event) => setPassword(event.target.value)} required type="password" value={password} />
-          </label>
+          {mode === "forgot" ? null : (
+            <label>
+              {mode === "recovery" ? "Nouveau mot de passe" : "Mot de passe"}
+              <input
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                minLength={8}
+                onChange={(event) => mode === "recovery" ? setNewPassword(event.target.value) : setPassword(event.target.value)}
+                required
+                type="password"
+                value={mode === "recovery" ? newPassword : password}
+              />
+            </label>
+          )}
 
           {message ? <p className="error-message">{message}</p> : null}
 
           <button className="primary-button" disabled={isLoading} type="submit">
-            {isLoading ? "Veuillez patienter..." : mode === "login" ? "Se connecter" : "Creer le compte"}
+            {isLoading
+              ? "Veuillez patienter..."
+              : mode === "register"
+                ? "Creer le compte"
+                : mode === "forgot"
+                  ? "Envoyer le lien"
+                  : mode === "recovery"
+                    ? "Modifier le mot de passe"
+                    : "Se connecter"}
           </button>
 
-          <button
-            className="link-button"
-            onClick={() => {
-              setMode(mode === "login" ? "register" : "login");
-              setMessage("");
-            }}
-            type="button"
-          >
-            {mode === "login" ? "Creer un compte" : "J'ai deja un compte"}
-          </button>
+          {mode === "login" ? (
+            <button
+              className="link-button"
+              onClick={() => {
+                setMode("forgot");
+                setMessage("");
+              }}
+              type="button"
+            >
+              Mot de passe oublie ?
+            </button>
+          ) : null}
+
+          {mode !== "recovery" ? (
+            <button
+              className="link-button"
+              onClick={() => {
+                setMode(mode === "login" ? "register" : "login");
+                setMessage("");
+              }}
+              type="button"
+            >
+              {mode === "login" ? "Creer un compte" : "Revenir a la connexion"}
+            </button>
+          ) : null}
 
           <button className="demo-button" onClick={startDemo} type="button">
             Voir la demo complete
