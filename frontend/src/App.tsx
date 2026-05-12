@@ -593,12 +593,10 @@ export function App() {
               <input
                 inputMode="numeric"
                 maxLength={17}
-                minLength={14}
-                pattern="[0-9 ]{14,17}"
                 onChange={(event) => setSiret(event.target.value)}
                 placeholder="14 chiffres"
                 required
-                title="SIRET attendu : 14 chiffres, espaces autorises."
+                title="SIRET attendu : exactement 14 chiffres, espaces autorises."
                 type="text"
                 value={siret}
               />

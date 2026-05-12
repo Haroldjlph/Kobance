@@ -1969,6 +1969,7 @@ export function RealWorkspace({
   }
 
   function goToPage(nextPage: Page) {
+    setError("");
     setPage(nextPage);
     setMobileMoreOpen(false);
   }
@@ -2220,11 +2221,9 @@ function CompanyPage(props: {
         <input
           inputMode="numeric"
           maxLength={17}
-          minLength={14}
-          pattern="[0-9 ]{14,17}"
           placeholder="SIRET"
           required
-          title="SIRET attendu : 14 chiffres, espaces autorises."
+          title="SIRET attendu : exactement 14 chiffres, espaces autorises."
           value={props.form.siret}
           onChange={(event) => props.onChange({ ...props.form, siret: event.target.value })}
         />
@@ -2876,7 +2875,7 @@ function PartyPage(props: {
         <input placeholder="Email" type="email" value={props.form.email} onChange={(e) => props.onChange({ ...props.form, email: e.target.value })} />
         <input placeholder="Telephone" type="tel" value={props.form.phone} onChange={(e) => props.onChange({ ...props.form, phone: e.target.value })} />
         <input placeholder="Adresse" value={props.form.address} onChange={(e) => props.onChange({ ...props.form, address: e.target.value })} />
-        <input inputMode="numeric" maxLength={17} pattern="[0-9 ]{14,17}" placeholder="SIRET" title="SIRET attendu : 14 chiffres, espaces autorises." value={props.form.siret} onChange={(e) => props.onChange({ ...props.form, siret: e.target.value })} />
+        <input inputMode="numeric" maxLength={17} placeholder="SIRET" title="SIRET attendu : exactement 14 chiffres, espaces autorises." value={props.form.siret} onChange={(e) => props.onChange({ ...props.form, siret: e.target.value })} />
         <input pattern="[Ff][Rr][A-Za-z0-9]{2}[0-9]{9}" placeholder="Numero TVA" title="Numero TVA francais attendu : FR + 2 caracteres + 9 chiffres, exemple FR12345678901." value={props.form.vat_number} onChange={(e) => props.onChange({ ...props.form, vat_number: e.target.value })} />
         <button className="primary-button" type="submit">{props.editingId ? "Enregistrer" : "Ajouter"}</button>
         {props.editingId ? <button className="link-button" onClick={props.onCancel} type="button">Annuler</button> : null}
