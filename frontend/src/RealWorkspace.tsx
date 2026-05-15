@@ -1,4 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import * as pdfjsLib from "pdfjs-dist";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import {
   BarChart3,
   Building2,
@@ -18,6 +20,8 @@ import {
   Users
 } from "lucide-react";
 import { supabase } from "./supabase";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 type Page = "dashboard" | "company" | "articles" | "clients" | "suppliers" | "quotes" | "invoices" | "sales" | "purchases" | "bank" | "vat" | "monthly";
 type Status = "PAID" | "UNPAID";
@@ -81,7 +85,17 @@ type Invoice = {
 };
 
 type Sale = Invoice & { client?: Party };
-type Purchase = Invoice & { supplier?: Party };
+type PurchaseLine = {
+  id: string;
+  purchase_id: string;
+  user_id: string;
+  description: string;
+  amount_ht: number;
+  vat_rate: number;
+  vat_amount: number;
+  amount_ttc: number;
+};
+type Purchase = Invoice & { supplier?: Party; purchase_lines?: PurchaseLine[] };
 
 type BankTransaction = {
   id: string;
@@ -189,6 +203,27 @@ type QuoteLine = {
   line_ttc: number;
 };
 
+type ParsedPurchasePdf = {
+  amountHt: string;
+  date: string;
+  description: string;
+  partyId: string;
+  proof: PdfReadProof;
+  vatRate: string;
+};
+
+type PdfReadProof = {
+  amountHt: string;
+  amounts: number[];
+  date: string;
+  fileName: string;
+  pages: number;
+  supplierName: string;
+  textPreview: string;
+  totalTtc: string;
+  vatRate: string;
+};
+
 const emptyParty = {
   name: "",
   email: "",
@@ -226,6 +261,14 @@ const emptyInvoice = {
   discountValue: "",
   status: "UNPAID" as Status
 };
+
+const emptyPurchaseLineDraft = {
+  description: "",
+  amountHt: "",
+  vatRate: "20"
+};
+
+type PurchaseLineDraft = typeof emptyPurchaseLineDraft;
 
 const emptyBankTransaction = {
   transactionDate: new Date().toISOString().slice(0, 10),
@@ -285,9 +328,15 @@ const monthOptions = [
   { value: 12, label: "Decembre" }
 ];
 
+function parseDecimalInput(value: string) {
+  const parsed = Number(String(value).replace(",", "."));
+
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function calculateAmounts(amountHt: string, vatRate: string) {
-  const ht = Number(amountHt);
-  const rate = Number(vatRate);
+  const ht = parseDecimalInput(amountHt);
+  const rate = parseDecimalInput(vatRate);
   const vatAmount = Math.round(ht * rate) / 100;
 
   return {
@@ -299,8 +348,8 @@ function calculateAmounts(amountHt: string, vatRate: string) {
 }
 
 function calculateSaleAmounts(amountHt: string, vatRate: string, discountType: DiscountType, discountValue: string) {
-  const rawHt = Number(amountHt);
-  const discount = Number(discountValue || 0);
+  const rawHt = parseDecimalInput(amountHt);
+  const discount = parseDecimalInput(discountValue || "0");
   const discountAmount =
     discountType === "PERCENT"
       ? rawHt * Math.min(Math.max(discount, 0), 100) / 100
@@ -312,9 +361,21 @@ function calculateSaleAmounts(amountHt: string, vatRate: string, discountType: D
 }
 
 function calculateLineAmounts(quantity: string, unitPriceHt: string, vatRate: string, discountType: DiscountType, discountValue: string) {
-  const baseHt = Number(quantity || 0) * Number(unitPriceHt || 0);
+  const baseHt = parseDecimalInput(quantity || "0") * parseDecimalInput(unitPriceHt || "0");
 
   return calculateSaleAmounts(String(baseHt), vatRate, discountType, discountValue);
+}
+
+function summarizePurchaseLines(lines: PurchaseLineDraft[]) {
+  return lines.reduce((totals, line) => {
+    const amounts = calculateAmounts(line.amountHt, line.vatRate);
+
+    return {
+      amount_ht: totals.amount_ht + amounts.amount_ht,
+      vat_amount: totals.vat_amount + amounts.vat_amount,
+      amount_ttc: totals.amount_ttc + amounts.amount_ttc
+    };
+  }, { amount_ht: 0, vat_amount: 0, amount_ttc: 0 });
 }
 
 const namePattern = /^[A-Za-zÀ-ÖØ-öø-ÿ' -]+$/;
@@ -349,6 +410,516 @@ function isPositiveInteger(value: string) {
 
 function isValidEmail(value: string) {
   return value === "" || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function parseFrenchAmount(value: string) {
+  const normalized = value
+    .replace(/\s/g, "")
+    .replace(/[€]/g, "")
+    .replace(",", ".");
+  const amount = Number(normalized);
+
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function formatAmountInput(value: number) {
+  return value.toFixed(2);
+}
+
+function parsePdfDate(text: string) {
+  const dateMatch = text.match(/\b(\d{1,2})[./-](\d{1,2})[./-](20\d{2})\b/);
+
+  if (!dateMatch) {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  const [, rawDay, rawMonth, year] = dateMatch;
+  const day = rawDay.padStart(2, "0");
+  const month = rawMonth.padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function findAmountAfterLabels(text: string, labels: string[]) {
+  for (const label of labels) {
+    const pattern = new RegExp(`${label}[^0-9-]*(-?\\d[\\d\\s.,]*\\d)\\s*(?:€|EUR)?`, "i");
+    const match = text.match(pattern);
+    const amount = match ? parseFrenchAmount(match[1]) : null;
+
+    if (amount !== null) {
+      return amount;
+    }
+  }
+
+  return null;
+}
+
+const pdfAmountPattern = "(-?\\d{1,3}(?:[\\s.]?\\d{3})*(?:[,.]\\d{2})|-?\\d+(?:[,.]\\d{2}))";
+
+function compactPdfText(text: string) {
+  return text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractAmountsFromTextFragment(text: string) {
+  const matches = Array.from(text.matchAll(new RegExp(pdfAmountPattern, "gi")));
+
+  return matches
+    .map((match) => parseFrenchAmount(match[1]))
+    .filter((amount): amount is number => amount !== null && amount > 0 && amount < 100000);
+}
+
+function pdfLines(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => compactPdfText(line))
+    .filter(Boolean);
+}
+
+function findAmountOnLabelLines(text: string, labels: string[]) {
+  const lines = pdfLines(text);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+
+    if (!labels.some((label) => new RegExp(label, "i").test(line))) {
+      continue;
+    }
+
+    const nearbyText = lines.slice(index, index + 3).join(" ");
+    const amounts = extractAmountsFromTextFragment(nearbyText);
+
+    if (amounts.length > 0) {
+      return amounts[amounts.length - 1];
+    }
+  }
+
+  return null;
+}
+
+function findSummaryTableAmount(text: string, kind: "HT" | "TVA") {
+  const lines = pdfLines(text);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const header = lines[index].toLowerCase();
+    const hasVatColumn = /\btva\b/.test(header);
+    const hasHtColumn = /\bh\s*\.?\s*t\.?\b|\bht\b|hors tva/.test(header);
+
+    if (!hasVatColumn || !hasHtColumn) {
+      continue;
+    }
+
+    for (let nextIndex = index + 1; nextIndex < Math.min(index + 4, lines.length); nextIndex += 1) {
+      const amounts = extractAmountsFromTextFragment(lines[nextIndex]);
+
+      if (amounts.length >= 2) {
+        return kind === "TVA" ? amounts[0] : amounts[amounts.length - 1];
+      }
+    }
+  }
+
+  return null;
+}
+
+function findBestAmountByLineScore(text: string, kind: "HT" | "TTC" | "TVA") {
+  const lines = pdfLines(text);
+  let bestAmount: number | null = null;
+  let bestScore = 0;
+
+  lines.forEach((line) => {
+    const normalizedLine = line.toLowerCase();
+    const amounts = extractAmountsFromTextFragment(line);
+
+    amounts.forEach((amount, amountIndex) => {
+      let score = amountIndex === amounts.length - 1 ? 4 : 0;
+
+      if (kind === "TTC") {
+        if (/\bttc\b/.test(normalizedLine)) score += 80;
+        if (/\b(total|montant total|net a payer|a payer|a regler|facture)\b/.test(normalizedLine)) score += 50;
+        if (/\b(hors tva|ht|base ht)\b/.test(normalizedLine)) score -= 120;
+        if (/\btva\b/.test(normalizedLine) && !/\bttc\b/.test(normalizedLine)) score -= 80;
+        if (/%|sur un montant|sur montant|montant total de/.test(normalizedLine) && !/\bttc\b/.test(normalizedLine)) score -= 70;
+      }
+
+      if (kind === "HT") {
+        if (/\bh\s*\.?\s*t\.?\b|\bht\b|hors tva|base ht/.test(normalizedLine)) score += 80;
+        if (/\b(total|montant|facture)\b/.test(normalizedLine)) score += 30;
+        if (/\bttc\b/.test(normalizedLine)) score -= 120;
+        if (/\btva\b/.test(normalizedLine) && !/\b(hors tva|ht|h\s*\.?\s*t\.?)\b/.test(normalizedLine)) score -= 70;
+      }
+
+      if (kind === "TVA") {
+        if (/\btva\b/.test(normalizedLine)) score += 80;
+        if (/\b(montant|total|dont)\b/.test(normalizedLine)) score += 25;
+        if (/\bttc\b|\bht\b|\bh\s*\.?\s*t\.?\b|hors tva/.test(normalizedLine)) score -= 80;
+        if (/%/.test(normalizedLine)) score -= 15;
+      }
+
+      if (score > 0 && (score > bestScore || (score === bestScore && (bestAmount === null || amount > bestAmount)))) {
+        bestAmount = amount;
+        bestScore = score;
+      }
+    });
+  });
+
+  return bestAmount;
+}
+
+type PdfAmountKind = "HT" | "TTC" | "TVA";
+type PdfAmountCandidate = {
+  amount: number;
+  kind: PdfAmountKind;
+  score: number;
+};
+type CoherentInvoiceAmounts = {
+  ht: number;
+  score: number;
+  ttc: number;
+  vat: number;
+};
+
+function roundedAmount(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function pushCandidate(candidates: PdfAmountCandidate[], kind: PdfAmountKind, amount: number, score: number) {
+  if (amount <= 0 || amount >= 100000 || score <= 0) {
+    return;
+  }
+
+  const rounded = roundedAmount(amount);
+  const existing = candidates.find((candidate) => candidate.kind === kind && candidate.amount === rounded);
+
+  if (existing) {
+    existing.score = Math.max(existing.score, score);
+    return;
+  }
+
+  candidates.push({ amount: rounded, kind, score });
+}
+
+function collectAmountCandidates(text: string, kind: PdfAmountKind) {
+  const candidates: PdfAmountCandidate[] = [];
+
+  pdfLines(text).forEach((line) => {
+    const normalizedLine = line.toLowerCase();
+    const amounts = extractAmountsFromTextFragment(line);
+    const hasTtcLabel = /\bttc\b|montant total|net a payer|a payer|a regler|facture ttc|total facture/.test(normalizedLine);
+    const hasHtLabel = /\bh\s*\.?\s*t\.?\b|\bht\b|hors tva|base ht/.test(normalizedLine);
+    const hasVatLabel = /\btva\b/.test(normalizedLine);
+
+    if (kind === "TTC" && !hasTtcLabel) {
+      return;
+    }
+
+    if (kind === "HT" && !hasHtLabel) {
+      return;
+    }
+
+    if (kind === "TVA" && !hasVatLabel) {
+      return;
+    }
+
+    amounts.forEach((amount, amountIndex) => {
+      const isLastAmount = amountIndex === amounts.length - 1;
+      let score = isLastAmount ? 8 : 0;
+
+      if (kind === "TTC") {
+        if (/\bttc\b/.test(normalizedLine)) score += 120;
+        if (/\b(total|montant total|net a payer|a payer|a regler|facture|reglements?|cb)\b/.test(normalizedLine)) score += 35;
+        if (/\b(hors tva|ht|h\s*\.?\s*t\.?|base ht)\b/.test(normalizedLine)) score -= 130;
+        if (/\btva\b/.test(normalizedLine) && !/\bttc\b/.test(normalizedLine)) score -= 90;
+        if (/%|sur un montant|sur montant|montant total de/.test(normalizedLine) && !/\bttc\b/.test(normalizedLine)) score -= 80;
+      }
+
+      if (kind === "HT") {
+        if (/\bh\s*\.?\s*t\.?\b|\bht\b|hors tva|base ht/.test(normalizedLine)) score += 120;
+        if (/\b(total|montant|facture)\b/.test(normalizedLine)) score += 30;
+        if (/\bttc\b/.test(normalizedLine)) score -= 130;
+        if (/\btva\b/.test(normalizedLine) && !/\b(hors tva|ht|h\s*\.?\s*t\.?)\b/.test(normalizedLine)) score -= 90;
+      }
+
+      if (kind === "TVA") {
+        if (/\btva\b/.test(normalizedLine)) score += 120;
+        if (/\b(montant|total|dont)\b/.test(normalizedLine)) score += 25;
+        if (/%/.test(normalizedLine) && !isLastAmount) score -= 100;
+        if (/%/.test(normalizedLine) && isLastAmount) score += 35;
+        if (/\bttc\b|\bht\b|\bh\s*\.?\s*t\.?\b|hors tva/.test(normalizedLine)) score -= 90;
+      }
+
+      pushCandidate(candidates, kind, amount, score);
+    });
+  });
+
+  return candidates.sort((first, second) => second.score - first.score).slice(0, 10);
+}
+
+function collectSummaryTableCandidates(text: string) {
+  const candidates: PdfAmountCandidate[] = [];
+  const lines = pdfLines(text);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const header = lines[index].toLowerCase();
+    const hasVatColumn = /\btva\b/.test(header);
+    const hasHtColumn = /\bh\s*\.?\s*t\.?\b|\bht\b|hors tva/.test(header);
+
+    if (!hasVatColumn || !hasHtColumn) {
+      continue;
+    }
+
+    for (let nextIndex = index + 1; nextIndex < Math.min(index + 4, lines.length); nextIndex += 1) {
+      const amounts = extractAmountsFromTextFragment(lines[nextIndex]);
+
+      if (amounts.length >= 2) {
+        pushCandidate(candidates, "TVA", amounts[0], 220);
+        pushCandidate(candidates, "HT", amounts[amounts.length - 1], 220);
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function chooseCoherentInvoiceAmounts(text: string): CoherentInvoiceAmounts | null {
+  const fallbackVatRate = Number(findVatRateInText(text));
+  const summaryCandidates = collectSummaryTableCandidates(text);
+  const htCandidates = [...summaryCandidates.filter((candidate) => candidate.kind === "HT"), ...collectAmountCandidates(text, "HT")];
+  const vatCandidates = [...summaryCandidates.filter((candidate) => candidate.kind === "TVA"), ...collectAmountCandidates(text, "TVA")];
+  const ttcCandidates = collectAmountCandidates(text, "TTC");
+  const allAmounts = extractLikelyPdfAmounts(text).filter((amount) => amount < 100000);
+  let best: CoherentInvoiceAmounts | null = null;
+
+  function consider(ht: number, vat: number, ttc: number, score: number) {
+    if (ht <= 0 || vat < 0 || ttc <= 0) {
+      return;
+    }
+
+    const gap = Math.abs(roundedAmount(ht + vat) - roundedAmount(ttc));
+
+    if (gap > 0.05) {
+      return;
+    }
+
+    const consistencyScore = Math.max(0, 300 - gap * 1000);
+    const totalAmountScore = Math.min(ttc, 10000) * 0.35;
+    const totalScore = score + consistencyScore + totalAmountScore;
+
+    if (!best || totalScore > best.score) {
+      best = {
+        ht: roundedAmount(ht),
+        score: totalScore,
+        ttc: roundedAmount(ttc),
+        vat: roundedAmount(vat)
+      };
+    }
+  }
+
+  htCandidates.forEach((htCandidate) => {
+    vatCandidates.forEach((vatCandidate) => {
+      ttcCandidates.forEach((ttcCandidate) => {
+        consider(htCandidate.amount, vatCandidate.amount, ttcCandidate.amount, htCandidate.score + vatCandidate.score + ttcCandidate.score);
+      });
+
+      consider(htCandidate.amount, vatCandidate.amount, htCandidate.amount + vatCandidate.amount, htCandidate.score + vatCandidate.score + 120);
+    });
+  });
+
+  ttcCandidates.forEach((ttcCandidate) => {
+    vatCandidates.forEach((vatCandidate) => {
+      consider(ttcCandidate.amount - vatCandidate.amount, vatCandidate.amount, ttcCandidate.amount, ttcCandidate.score + vatCandidate.score + 80);
+    });
+
+    if (fallbackVatRate >= 0) {
+      const ht = ttcCandidate.amount / (1 + fallbackVatRate / 100);
+      consider(ht, ttcCandidate.amount - ht, ttcCandidate.amount, ttcCandidate.score + 60);
+    }
+  });
+
+  const labeledTtcAmounts = ttcCandidates.map((candidate) => candidate.amount);
+  const labeledVatAmounts = vatCandidates.map((candidate) => candidate.amount);
+  labeledTtcAmounts.forEach((ttc) => {
+    labeledVatAmounts.forEach((vat) => {
+      if (vat < ttc) {
+        consider(ttc - vat, vat, ttc, 520);
+      }
+    });
+  });
+
+  allAmounts.forEach((ttc) => {
+    allAmounts.forEach((firstPart) => {
+      allAmounts.forEach((secondPart) => {
+        if (firstPart >= ttc || secondPart >= ttc || firstPart > secondPart) {
+          return;
+        }
+
+        const gap = Math.abs(roundedAmount(firstPart + secondPart) - roundedAmount(ttc));
+
+        if (gap > 0.05) {
+          return;
+        }
+
+        const inferredRate = firstPart / secondPart * 100;
+        const rateScore = Math.min(
+          Math.abs(inferredRate - 20),
+          Math.abs(inferredRate - 10),
+          Math.abs(inferredRate - 5.5),
+          Math.abs(inferredRate)
+        ) < 1 ? 90 : 0;
+        const ttcLabelScore = ttcCandidates.some((candidate) => candidate.amount === roundedAmount(ttc)) ? 120 : 0;
+        const htLabelScore = htCandidates.some((candidate) => candidate.amount === roundedAmount(secondPart)) ? 90 : 0;
+        const vatLabelScore = vatCandidates.some((candidate) => candidate.amount === roundedAmount(firstPart)) ? 90 : 0;
+
+        consider(secondPart, firstPart, ttc, 140 + rateScore + ttcLabelScore + htLabelScore + vatLabelScore);
+      });
+    });
+  });
+
+  return best;
+}
+
+function findPdfAmountNearLabels(text: string, labels: string[]) {
+  const normalizedText = compactPdfText(text);
+
+  for (const label of labels) {
+    const afterLabel = normalizedText.match(new RegExp(`${label}[\\s\\S]{0,90}?${pdfAmountPattern}\\s*(?:\\u20ac|EUR)?`, "i"));
+    const beforeLabel = normalizedText.match(new RegExp(`${pdfAmountPattern}\\s*(?:\\u20ac|EUR)?[\\s\\S]{0,50}?${label}`, "i"));
+    const amount = parseFrenchAmount(afterLabel?.[1] ?? beforeLabel?.[1] ?? "");
+
+    if (amount !== null && amount > 0) {
+      return amount;
+    }
+  }
+
+  return null;
+}
+
+function extractLikelyPdfAmounts(text: string) {
+  const normalizedText = compactPdfText(text);
+  const matches = Array.from(normalizedText.matchAll(new RegExp(`${pdfAmountPattern}\\s*(?:\\u20ac|EUR)?`, "gi")));
+  const amounts = matches
+    .map((match) => parseFrenchAmount(match[1]))
+    .filter((amount): amount is number => amount !== null && amount > 0 && amount < 1000000);
+
+  return Array.from(new Set(amounts.map((amount) => Math.round(amount * 100) / 100)))
+    .sort((a, b) => b - a);
+}
+
+function findVatRateInText(text: string) {
+  const matches = Array.from(compactPdfText(text).matchAll(/\b(20|10|5[,.]5|0)\s*%/g));
+  const rates = matches.map((match) => match[1].replace(",", "."));
+
+  return rates.find((rate) => rate !== "0") ?? "20";
+}
+
+function positiveAmountOrNull(value: number | null) {
+  return value !== null && value > 0 ? value : null;
+}
+
+function inferVatRate(totalHt: number, totalVat: number) {
+  if (totalHt <= 0 || totalVat < 0) {
+    return "20";
+  }
+
+  const inferred = Math.round((totalVat / totalHt) * 1000) / 10;
+  const knownRates = [0, 5.5, 10, 20];
+  const closest = knownRates.reduce((best, rate) =>
+    Math.abs(rate - inferred) < Math.abs(best - inferred) ? rate : best
+  , 20);
+
+  return String(closest);
+}
+
+function findSupplierFromPdf(text: string, suppliers: Party[]) {
+  const normalizedText = text.toLowerCase();
+
+  return suppliers.find((supplier) => normalizedText.includes(supplier.name.toLowerCase()));
+}
+
+async function extractPdfText(file: File) {
+  const buffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+  const pages: string[] = [];
+
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const positionedItems = content.items
+      .map((item) => {
+        if (!("str" in item) || !("transform" in item) || !Array.isArray(item.transform)) {
+          return null;
+        }
+
+        return {
+          text: item.str.trim(),
+          x: item.transform[4] ?? 0,
+          y: Math.round(item.transform[5] ?? 0)
+        };
+      })
+      .filter((item): item is { text: string; x: number; y: number } => Boolean(item?.text))
+      .filter((item) => item.text);
+    const groupedLines = new Map<number, Array<{ text: string; x: number }>>();
+
+    positionedItems.forEach((item) => {
+      const line = groupedLines.get(item.y) ?? [];
+      line.push({ text: item.text, x: item.x });
+      groupedLines.set(item.y, line);
+    });
+
+    const pageText = Array.from(groupedLines.entries())
+      .sort(([firstY], [secondY]) => secondY - firstY)
+      .map(([, line]) => line
+        .sort((first, second) => first.x - second.x)
+        .map((item) => item.text)
+        .join(" ")
+      )
+      .join("\n");
+
+    pages.push(pageText);
+  }
+
+  return {
+    pageCount: pdf.numPages,
+    text: pages.join("\n")
+  };
+}
+
+async function parsePurchasePdf(file: File, suppliers: Party[]): Promise<ParsedPurchasePdf> {
+  const { pageCount, text } = await extractPdfText(file);
+  const supplier = findSupplierFromPdf(text, suppliers);
+  const likelyAmounts = extractLikelyPdfAmounts(text);
+  const coherentAmounts = chooseCoherentInvoiceAmounts(text);
+  const fallbackVatRate = findVatRateInText(text);
+  const computedHt = coherentAmounts?.ht ?? null;
+
+  if (computedHt === null) {
+    throw new Error("Lecture impossible : je n'ai pas trouve de montant exploitable dans ce PDF. S'il s'agit d'un scan, il faudra passer par l'OCR.");
+  }
+
+  const computedVat = coherentAmounts?.vat ?? computedHt * Number(fallbackVatRate) / 100;
+  const totalTtc = coherentAmounts?.ttc ?? roundedAmount(computedHt + computedVat);
+  const vatRate = inferVatRate(computedHt, computedVat);
+
+  return {
+    amountHt: formatAmountInput(computedHt),
+    date: parsePdfDate(text),
+    description: `Facture PDF - ${supplier?.name ?? file.name.replace(/\.pdf$/i, "")}`,
+    partyId: supplier?.id ?? "",
+    proof: {
+      amountHt: formatAmountInput(computedHt),
+      amounts: likelyAmounts.slice(0, 8),
+      date: parsePdfDate(text),
+      fileName: file.name,
+      pages: pageCount,
+      supplierName: supplier?.name ?? "Non detecte",
+      textPreview: compactPdfText(text).slice(0, 600),
+      totalTtc: totalTtc !== null ? formatAmountInput(totalTtc) : "Non detecte",
+      vatRate
+    },
+    vatRate
+  };
 }
 
 function supportWhatsappUrl() {
@@ -798,6 +1369,7 @@ export function RealWorkspace({
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [saleForm, setSaleForm] = useState(emptyInvoice);
   const [purchaseForm, setPurchaseForm] = useState(emptyInvoice);
+  const [purchaseLineDrafts, setPurchaseLineDrafts] = useState<PurchaseLineDraft[]>([{ ...emptyPurchaseLineDraft }]);
   const [bankTransactionForm, setBankTransactionForm] = useState(emptyBankTransaction);
   const [editingClientId, setEditingClientId] = useState<string | null>(null);
   const [editingSupplierId, setEditingSupplierId] = useState<string | null>(null);
@@ -806,6 +1378,7 @@ export function RealWorkspace({
   const [editingPurchaseId, setEditingPurchaseId] = useState<string | null>(null);
   const [editingBankTransactionId, setEditingBankTransactionId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [purchasePdfProof, setPurchasePdfProof] = useState<PdfReadProof | null>(null);
   const now = new Date();
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
@@ -819,6 +1392,15 @@ export function RealWorkspace({
 
   const isCompanyOwner = activeCompanyUserId === userId;
   const currentCompanyUserId = activeCompanyUserId;
+
+  function movePeriodToDate(date: string) {
+    const [year, month] = date.split("-").map(Number);
+
+    if (Number.isInteger(year) && Number.isInteger(month) && month >= 1 && month <= 12) {
+      setSelectedYear(year);
+      setSelectedMonth(month);
+    }
+  }
 
   async function loadData() {
     setError("");
@@ -875,7 +1457,7 @@ export function RealWorkspace({
         .order("invoice_date", { ascending: false }),
       supabase
         .from("purchases")
-        .select("*, supplier:suppliers(*)")
+        .select("*, supplier:suppliers(*), purchase_lines(*)")
         .eq("user_id", companyUserId)
         .gte("invoice_date", period.start)
         .lt("invoice_date", period.end)
@@ -1106,10 +1688,11 @@ export function RealWorkspace({
 
     if (insertError) {
       setError(displaySupabaseError(insertError.message));
-      return;
+      return false;
     }
 
     await loadData();
+    return true;
   }
 
   async function updateInvoice(table: "sales" | "purchases", id: string, form: typeof emptyInvoice) {
@@ -1132,10 +1715,84 @@ export function RealWorkspace({
 
     if (updateError) {
       setError(displaySupabaseError(updateError.message));
-      return;
+      return false;
     }
 
     await loadData();
+    return true;
+  }
+
+  async function createPurchaseInvoice(form: typeof emptyInvoice, lines: PurchaseLineDraft[]) {
+    const totals = summarizePurchaseLines(lines);
+    const primaryVatRate = lines.length === 1 ? parseDecimalInput(lines[0].vatRate) : 0;
+    const { data, error: insertError } = await supabase.from("purchases").insert({
+      user_id: currentCompanyUserId,
+      party_id: form.partyId,
+      invoice_date: form.date,
+      description: form.description,
+      status: form.status,
+      vat_rate: primaryVatRate,
+      ...totals
+    }).select("id").single();
+
+    if (insertError || !data) {
+      setError(displaySupabaseError(insertError?.message ?? "Impossible d'ajouter la facture d'achat."));
+      return false;
+    }
+
+    const { error: linesError } = await supabase.from("purchase_lines").insert(lines.map((line) => ({
+      purchase_id: data.id,
+      user_id: currentCompanyUserId,
+      description: line.description.trim(),
+      ...calculateAmounts(line.amountHt, line.vatRate)
+    })));
+
+    if (linesError) {
+      setError(displaySupabaseError(linesError.message));
+      return false;
+    }
+
+    await loadData();
+    return true;
+  }
+
+  async function updatePurchaseInvoice(id: string, form: typeof emptyInvoice, lines: PurchaseLineDraft[]) {
+    const totals = summarizePurchaseLines(lines);
+    const primaryVatRate = lines.length === 1 ? parseDecimalInput(lines[0].vatRate) : 0;
+    const { error: updateError } = await supabase.from("purchases").update({
+      party_id: form.partyId,
+      invoice_date: form.date,
+      description: form.description,
+      status: form.status,
+      vat_rate: primaryVatRate,
+      ...totals
+    }).eq("id", id);
+
+    if (updateError) {
+      setError(displaySupabaseError(updateError.message));
+      return false;
+    }
+
+    const { error: deleteLinesError } = await supabase.from("purchase_lines").delete().eq("purchase_id", id);
+    if (deleteLinesError) {
+      setError(displaySupabaseError(deleteLinesError.message));
+      return false;
+    }
+
+    const { error: linesError } = await supabase.from("purchase_lines").insert(lines.map((line) => ({
+      purchase_id: id,
+      user_id: currentCompanyUserId,
+      description: line.description.trim(),
+      ...calculateAmounts(line.amountHt, line.vatRate)
+    })));
+
+    if (linesError) {
+      setError(displaySupabaseError(linesError.message));
+      return false;
+    }
+
+    await loadData();
+    return true;
   }
 
   async function createBankTransaction(form: typeof emptyBankTransaction) {
@@ -1795,26 +2452,118 @@ export function RealWorkspace({
 
   function submitSale(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (!saleForm.partyId) {
+      setError("Selectionnez un client avant d'ajouter la vente.");
+      return;
+    }
+
+    if (!saleForm.date) {
+      setError("Selectionnez une date avant d'ajouter la vente.");
+      return;
+    }
+
+    if (!saleForm.description.trim()) {
+      setError("Renseignez une description avant d'ajouter la vente.");
+      return;
+    }
+
+    if (parseDecimalInput(saleForm.amountHt) <= 0) {
+      setError("Le montant HT doit etre superieur a 0.");
+      return;
+    }
+
     const action = editingSaleId
       ? updateInvoice("sales", editingSaleId, saleForm)
       : createInvoice("sales", saleForm);
 
-    void action.then(() => {
-      setSaleForm(emptyInvoice);
-      setEditingSaleId(null);
+    void action.then((success) => {
+      if (success) {
+        movePeriodToDate(saleForm.date);
+        setSaleForm(emptyInvoice);
+        setEditingSaleId(null);
+      }
     });
   }
 
   function submitPurchase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const action = editingPurchaseId
-      ? updateInvoice("purchases", editingPurchaseId, purchaseForm)
-      : createInvoice("purchases", purchaseForm);
 
-    void action.then(() => {
-      setPurchaseForm(emptyInvoice);
-      setEditingPurchaseId(null);
+    if (!purchaseForm.partyId) {
+      setError("Selectionnez un fournisseur avant d'ajouter l'achat. Si le fournisseur n'existe pas encore, creez-le dans le menu Fournisseurs.");
+      return;
+    }
+
+    if (!purchaseForm.date) {
+      setError("Selectionnez une date avant d'ajouter l'achat.");
+      return;
+    }
+
+    if (!purchaseForm.description.trim()) {
+      setError("Renseignez une description avant d'ajouter l'achat.");
+      return;
+    }
+
+    const validLines = purchaseLineDrafts.filter((line) => line.description.trim() && parseDecimalInput(line.amountHt) > 0);
+    if (validLines.length === 0 || validLines.length !== purchaseLineDrafts.length) {
+      setError("Chaque ligne d'achat doit avoir une description et un montant HT superieur a 0.");
+      return;
+    }
+
+    const action = editingPurchaseId
+      ? updatePurchaseInvoice(editingPurchaseId, purchaseForm, purchaseLineDrafts)
+      : createPurchaseInvoice(purchaseForm, purchaseLineDrafts);
+
+    void action.then((success) => {
+      if (success) {
+        movePeriodToDate(purchaseForm.date);
+        setPurchaseForm(emptyInvoice);
+        setPurchaseLineDrafts([{ ...emptyPurchaseLineDraft }]);
+        setEditingPurchaseId(null);
+        setPurchasePdfProof(null);
+      }
     });
+  }
+
+  async function importPurchasePdf(file: File) {
+    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      setError("Import impossible : choisissez une facture au format PDF.");
+      return;
+    }
+
+    try {
+      const parsed = await parsePurchasePdf(file, suppliers);
+
+      setPurchaseForm({
+        ...purchaseForm,
+        articleId: "",
+        amountHt: parsed.amountHt,
+        date: parsed.date,
+        description: parsed.description,
+        discountType: "NONE",
+        discountValue: "",
+        partyId: parsed.partyId,
+        status: "UNPAID",
+        vatRate: parsed.vatRate
+      });
+      setPurchaseLineDrafts([{
+        description: `Facture PDF - ${parsed.proof.supplierName}`,
+        amountHt: parsed.amountHt,
+        vatRate: parsed.vatRate
+      }]);
+      setPurchasePdfProof(parsed.proof);
+      setEditingPurchaseId(null);
+      if (!parsed.partyId) {
+        setError("PDF lu. Choisissez le fournisseur, puis verifiez les montants avant d'ajouter l'achat.");
+      } else if (parseDecimalInput(parsed.amountHt) <= 0) {
+        setError("PDF lu, mais le montant HT n'a pas ete detecte. Corrigez le montant avant d'ajouter l'achat.");
+      } else {
+        setError("");
+      }
+    } catch (error) {
+      setPurchasePdfProof(null);
+      setError(error instanceof Error ? error.message : "Lecture PDF impossible.");
+    }
   }
 
   function submitBankTransaction(event: FormEvent<HTMLFormElement>) {
@@ -1868,7 +2617,21 @@ export function RealWorkspace({
       return;
     }
 
+    const purchase = row as Purchase;
     setPurchaseForm(form);
+    setPurchaseLineDrafts(
+      purchase.purchase_lines?.length
+        ? purchase.purchase_lines.map((line: PurchaseLine) => ({
+          description: line.description,
+          amountHt: String(line.amount_ht),
+          vatRate: String(line.vat_rate)
+        }))
+        : [{
+          description: row.description,
+          amountHt: String(row.amount_ht),
+          vatRate: String(row.vat_rate)
+        }]
+    );
     setEditingPurchaseId(row.id);
   }
 
@@ -1977,7 +2740,7 @@ export function RealWorkspace({
   const primaryMobilePages: Array<{ page: Page; icon: React.ReactNode; label: string }> = [
     { page: "dashboard", icon: <BarChart3 size={20} />, label: "Accueil" },
     { page: "invoices", icon: <ReceiptText size={20} />, label: "Factures" },
-    { page: "purchases", icon: <ShoppingCart size={20} />, label: "Achats" },
+    { page: "purchases", icon: <ShoppingCart size={20} />, label: "Factures d'achats" },
     { page: "bank", icon: <CreditCard size={20} />, label: "Banque" }
   ];
 
@@ -2024,7 +2787,7 @@ export function RealWorkspace({
             <Nav active={page === "suppliers"} icon={<Building2 size={18} />} label="Fournisseurs" onClick={() => goToPage("suppliers")} />
             <Nav active={page === "quotes"} icon={<FileText size={18} />} label="Devis" onClick={() => goToPage("quotes")} />
             <Nav active={page === "invoices"} icon={<ReceiptText size={18} />} label="Factures" onClick={() => goToPage("invoices")} />
-            <Nav active={page === "purchases"} icon={<ShoppingCart size={18} />} label="Achats" onClick={() => goToPage("purchases")} />
+            <Nav active={page === "purchases"} icon={<ShoppingCart size={18} />} label="Factures d'achats" onClick={() => goToPage("purchases")} />
             <Nav active={page === "bank"} icon={<CreditCard size={18} />} label="Banque" onClick={() => goToPage("bank")} />
             <Nav active={page === "vat"} icon={<Scale size={18} />} label="TVA" onClick={() => goToPage("vat")} />
             <Nav active={page === "monthly"} icon={<CalendarDays size={18} />} label="Recap mensuel" onClick={() => goToPage("monthly")} />
@@ -2051,7 +2814,7 @@ export function RealWorkspace({
         {page === "suppliers" ? <PartyPage editingId={editingSupplierId} form={supplierForm} onCancel={() => { setSupplierForm(emptyParty); setEditingSupplierId(null); }} onChange={setSupplierForm} onEdit={(row) => editParty(row, "supplier")} onImport={(file) => importParties("suppliers", file)} onSubmit={submitSupplier} rows={suppliers} title="Fournisseurs" onDelete={(id) => remove("suppliers", id)} /> : null}
         {page === "quotes" ? <QuotesPage articles={articles} clients={clients} form={quoteDocumentForm} lineForm={quoteLineForm} onChange={setQuoteDocumentForm} onConvert={convertQuoteToInvoice} onDelete={deleteQuoteDocument} onDeleteLine={deleteQuoteLine} onLineChange={setQuoteLineForm} onLineSubmit={addQuoteLine} onPrint={(quote) => generateQuoteDocumentFromLines(quote, profile)} onSelect={setSelectedQuoteId} onSubmit={createQuoteDocument} selectedQuoteId={selectedQuoteId} rows={quoteDocuments} /> : null}
         {page === "invoices" ? <InvoicesPage articles={articles} clients={clients} creditNotes={creditNotes} form={invoiceDocumentForm} lineForm={invoiceLineForm} onChange={setInvoiceDocumentForm} onCreditNote={createCreditNote} onDelete={deleteInvoiceDocument} onDeleteLine={deleteInvoiceLine} onLineChange={setInvoiceLineForm} onLineSubmit={addInvoiceLine} onPrint={(invoice) => generateInvoiceDocumentFromLines(invoice, profile)} onPrintCreditNote={(creditNote) => generateCreditNoteDocument(creditNote, profile)} onSelect={setSelectedInvoiceId} onStatusChange={updateInvoiceStatus} onSubmit={createInvoiceDocument} selectedInvoiceId={selectedInvoiceId} rows={invoiceDocuments} /> : null}
-        {page === "purchases" ? <InvoicePage editingId={editingPurchaseId} filename={periodFilename("achats")} onCancel={() => { setPurchaseForm(emptyInvoice); setEditingPurchaseId(null); }} onDelete={(id) => remove("purchases", id)} onEdit={(row) => editInvoice(row, "purchase")} form={purchaseForm} onChange={setPurchaseForm} onSubmit={submitPurchase} parties={suppliers} partyLabel="Fournisseur" rows={purchases} title="Achats" /> : null}
+        {page === "purchases" ? <InvoicePage editingId={editingPurchaseId} filename={periodFilename("factures-achats")} onCancel={() => { setPurchaseForm(emptyInvoice); setPurchaseLineDrafts([{ ...emptyPurchaseLineDraft }]); setEditingPurchaseId(null); setPurchasePdfProof(null); }} onDelete={(id) => remove("purchases", id)} onEdit={(row) => editInvoice(row, "purchase")} onPdfImport={importPurchasePdf} pdfProof={purchasePdfProof} form={purchaseForm} onChange={setPurchaseForm} onSubmit={submitPurchase} parties={suppliers} partyLabel="Fournisseur" purchaseLines={purchaseLineDrafts} onPurchaseLinesChange={setPurchaseLineDrafts} rows={purchases} title="Factures d'achats" /> : null}
         {page === "bank" ? <BankPage editingId={editingBankTransactionId} filename={periodFilename("banque")} form={bankTransactionForm} invoices={invoiceDocuments} onCancel={() => { setBankTransactionForm(emptyBankTransaction); setEditingBankTransactionId(null); }} onChange={setBankTransactionForm} onDelete={(id) => remove("bank_transactions", id)} onEdit={editBankTransaction} onSubmit={submitBankTransaction} onToggleReconciled={toggleBankTransactionReconciled} purchases={purchases} rows={bankTransactions} totals={totals} /> : null}
         {page === "vat" ? <VatPage creditNotes={creditNotes} filename={periodFilename("tva")} invoices={invoiceDocuments} purchases={purchases} totals={totals} /> : null}
         {page === "monthly" ? <Monthly filename={periodFilename("recap-mensuel")} totals={totals} invoices={invoiceDocuments} purchases={purchases} /> : null}
@@ -2715,12 +3478,25 @@ function VatPage({
     const accountingInvoices = invoices.filter((invoice) => invoice.status === "ISSUED" || invoice.status === "PAID");
     const invoiceLines = accountingInvoices.flatMap((invoice) => invoice.invoice_lines ?? []);
     const creditLines = creditNotes.flatMap((creditNote) => creditNote.credit_note_lines ?? []);
-    const rates = Array.from(new Set([...invoiceLines, ...creditLines, ...purchases].map((item) => Number(item.vat_rate)))).sort((a, b) => b - a);
+    const purchaseTaxRows: Array<{ vat_rate: number; amount_ht: number; vat_amount: number }> = purchases.flatMap((purchase) =>
+      purchase.purchase_lines?.length
+        ? purchase.purchase_lines.map((line) => ({
+          vat_rate: line.vat_rate,
+          amount_ht: line.amount_ht,
+          vat_amount: line.vat_amount
+        }))
+        : [{
+          vat_rate: purchase.vat_rate,
+          amount_ht: purchase.amount_ht,
+          vat_amount: purchase.vat_amount
+        }]
+    );
+    const rates = Array.from(new Set([...invoiceLines, ...creditLines, ...purchaseTaxRows].map((item) => Number(item.vat_rate)))).sort((a, b) => b - a);
 
     return rates.map((rate) => {
       const invoiceLinesAtRate = invoiceLines.filter((item) => Number(item.vat_rate) === rate);
       const creditLinesAtRate = creditLines.filter((item) => Number(item.vat_rate) === rate);
-      const purchasesAtRate = purchases.filter((item) => Number(item.vat_rate) === rate);
+      const purchasesAtRate = purchaseTaxRows.filter((item) => Number(item.vat_rate) === rate);
       const creditHt = creditLinesAtRate.reduce((sum, item) => sum + Number(item.line_ht), 0);
       const creditVat = creditLinesAtRate.reduce((sum, item) => sum + Number(item.line_vat), 0);
       const salesHt = invoiceLinesAtRate.reduce((sum, item) => sum + Number(item.line_ht), 0) - creditHt;
@@ -2952,14 +3728,19 @@ function InvoicePage(props: {
   onChange: (value: typeof emptyInvoice) => void;
   onDelete: (id: string) => void;
   onEdit: (row: Sale | Purchase) => void;
+  onPdfImport?: (file: File) => void;
+  onPurchaseLinesChange?: (value: PurchaseLineDraft[]) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  pdfProof?: PdfReadProof | null;
   parties: Party[];
   partyLabel: string;
   profile?: Profile | null;
+  purchaseLines?: PurchaseLineDraft[];
   rows: Array<Sale | Purchase>;
   title: string;
 }) {
   const isSalesPage = props.title === "Ventes";
+  const purchaseTotals = summarizePurchaseLines(props.purchaseLines ?? []);
 
   function exportRows() {
     downloadCsv(
@@ -3001,7 +3782,51 @@ function InvoicePage(props: {
           </button>
         }
       />
-      <form className="form-grid" onSubmit={props.onSubmit}>
+      {!isSalesPage ? (
+        <div className="import-panel">
+          <div>
+            <p className="eyebrow">Lecture PDF</p>
+            <h2>Importer une facture fournisseur</h2>
+            <p>
+              Selectionnez une facture PDF avec texte lisible. Kobance pre-remplit le fournisseur, la date, le HT et la TVA quand ces informations sont detectees.
+            </p>
+          </div>
+          <div className="import-actions">
+            <label className="file-button">
+              <Download size={18} />
+              Lire un PDF
+              <input accept="application/pdf,.pdf" type="file" onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file && props.onPdfImport) {
+                  void props.onPdfImport(file);
+                  event.target.value = "";
+                }
+              }} />
+            </label>
+          </div>
+          {props.pdfProof ? (
+            <div className="pdf-proof">
+              <div className="pdf-proof-header">
+                <strong>Preuve de lecture PDF</strong>
+                <span>{props.pdfProof.fileName} - {props.pdfProof.pages} page{props.pdfProof.pages > 1 ? "s" : ""}</span>
+              </div>
+              <div className="pdf-proof-grid">
+                <span>Fournisseur : <strong>{props.pdfProof.supplierName}</strong></span>
+                <span>Date : <strong>{props.pdfProof.date}</strong></span>
+                <span>HT retenu : <strong>{props.pdfProof.amountHt} EUR</strong></span>
+                <span>TTC detecte : <strong>{props.pdfProof.totalTtc} EUR</strong></span>
+                <span>TVA : <strong>{props.pdfProof.vatRate} %</strong></span>
+                <span>Montants lus : <strong>{props.pdfProof.amounts.length ? props.pdfProof.amounts.map((amount) => formatAmountInput(amount)).join(" / ") : "Aucun"}</strong></span>
+              </div>
+              <details>
+                <summary>Voir le texte lu dans le PDF</summary>
+                <p>{props.pdfProof.textPreview || "Aucun texte lisible detecte. Le PDF est probablement un scan."}</p>
+              </details>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <form className="form-grid" noValidate onSubmit={props.onSubmit}>
         <select required value={props.form.partyId} onChange={(e) => props.onChange({ ...props.form, partyId: e.target.value })}>
           <option value="">{props.partyLabel}</option>
           {props.parties.map((party) => <option key={party.id} value={party.id}>{party.name}</option>)}
@@ -3030,13 +3855,17 @@ function InvoicePage(props: {
         ) : null}
         <input type="date" required value={props.form.date} onChange={(e) => props.onChange({ ...props.form, date: e.target.value })} />
         <input placeholder="Description" required value={props.form.description} onChange={(e) => props.onChange({ ...props.form, description: e.target.value })} />
-        <input placeholder="Montant HT" required type="number" step="0.01" value={props.form.amountHt} onChange={(e) => props.onChange({ ...props.form, amountHt: e.target.value })} />
-        <select value={props.form.vatRate} onChange={(e) => props.onChange({ ...props.form, vatRate: e.target.value })}>
-          <option value="0">TVA 0 %</option>
-          <option value="5.5">TVA 5,5 %</option>
-          <option value="10">TVA 10 %</option>
-          <option value="20">TVA 20 %</option>
-        </select>
+        {isSalesPage ? (
+          <>
+            <input placeholder="Montant HT" required type="number" step="0.01" value={props.form.amountHt} onChange={(e) => props.onChange({ ...props.form, amountHt: e.target.value })} />
+            <select value={props.form.vatRate} onChange={(e) => props.onChange({ ...props.form, vatRate: e.target.value })}>
+              <option value="0">TVA 0 %</option>
+              <option value="5.5">TVA 5,5 %</option>
+              <option value="10">TVA 10 %</option>
+              <option value="20">TVA 20 %</option>
+            </select>
+          </>
+        ) : null}
         {isSalesPage ? (
           <>
             <select value={props.form.discountType} onChange={(e) => props.onChange({ ...props.form, discountType: e.target.value as DiscountType })}>
@@ -3061,6 +3890,46 @@ function InvoicePage(props: {
         <button className="primary-button" type="submit">{props.editingId ? "Enregistrer" : "Ajouter"}</button>
         {props.editingId ? <button className="link-button" onClick={props.onCancel} type="button">Annuler</button> : null}
       </form>
+      {!isSalesPage ? (
+        <section className="purchase-lines-panel">
+          <div className="purchase-lines-header">
+            <div>
+              <p className="eyebrow">Lignes</p>
+              <h2>Lignes de facture d'achat</h2>
+            </div>
+            <button className="export-button" onClick={() => props.onPurchaseLinesChange?.([...(props.purchaseLines ?? []), { ...emptyPurchaseLineDraft }])} type="button">
+              Ajouter une ligne
+            </button>
+          </div>
+          <div className="purchase-line-list">
+            {(props.purchaseLines ?? []).map((line, index) => {
+              const amounts = calculateAmounts(line.amountHt, line.vatRate);
+              return (
+                <div className="purchase-line-row" key={`${index}-${line.description}`}>
+                  <input placeholder="Description" value={line.description} onChange={(event) => props.onPurchaseLinesChange?.((props.purchaseLines ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item))} />
+                  <input placeholder="Montant HT" step="0.01" type="number" value={line.amountHt} onChange={(event) => props.onPurchaseLinesChange?.((props.purchaseLines ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, amountHt: event.target.value } : item))} />
+                  <select value={line.vatRate} onChange={(event) => props.onPurchaseLinesChange?.((props.purchaseLines ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, vatRate: event.target.value } : item))}>
+                    <option value="0">TVA 0 %</option>
+                    <option value="5.5">TVA 5,5 %</option>
+                    <option value="10">TVA 10 %</option>
+                    <option value="20">TVA 20 %</option>
+                  </select>
+                  <span>{formatEuro(amounts.vat_amount)}</span>
+                  <span>{formatEuro(amounts.amount_ttc)}</span>
+                  <button className="danger-button" disabled={(props.purchaseLines ?? []).length === 1} onClick={() => props.onPurchaseLinesChange?.((props.purchaseLines ?? []).filter((_, itemIndex) => itemIndex !== index))} type="button">
+                    Supprimer
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <div className="purchase-lines-totals">
+            <span>Total HT <strong>{formatEuro(purchaseTotals.amount_ht)}</strong></span>
+            <span>Total TVA <strong>{formatEuro(purchaseTotals.vat_amount)}</strong></span>
+            <span>Total TTC <strong>{formatEuro(purchaseTotals.amount_ttc)}</strong></span>
+          </div>
+        </section>
+      ) : null}
       <div className="table-card">
         <table>
           <thead><tr><th>Date</th><th>{props.partyLabel}</th><th>Description</th><th>HT</th><th>Remise</th><th>TVA</th><th>TTC</th><th>Statut</th><th>Actions</th></tr></thead>

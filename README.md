@@ -69,13 +69,14 @@ npm run dev -- --host 0.0.0.0 --port 5174
 
 ## Base de donnees
 
-Dans Supabase, executer le script :
+Dans Supabase, executer les scripts dans l'ordre :
 
 ```text
 database/001_init_compta_supabase.sql
+database/002_add_purchase_lines.sql
 ```
 
-Ce script cree les tables, index, fonctions et politiques RLS necessaires.
+Ces scripts creent les tables, index, fonctions et politiques RLS necessaires.
 
 ## Verification
 
