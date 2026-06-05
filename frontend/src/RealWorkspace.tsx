@@ -378,6 +378,14 @@ function summarizePurchaseLines(lines: PurchaseLineDraft[]) {
   }, { amount_ht: 0, vat_amount: 0, amount_ttc: 0 });
 }
 
+function normalizePurchaseDuplicateDescription(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function amountToCents(value: number | string) {
+  return Math.round(Number(value) * 100);
+}
+
 const namePattern = /^[A-Za-zÀ-ÖØ-öø-ÿ' -]+$/;
 const siretPattern = /^\d{14}$/;
 const frenchVatPattern = /^FR[A-Z0-9]{2}\d{9}$/;
@@ -991,6 +999,10 @@ function openPrintableHtml(html: string) {
 function displaySupabaseError(message: string) {
   if (message.toLowerCase().includes("row-level security")) {
     return `Acces refuse par Supabase RLS. Verifiez que le SQL a ete rejoue et que vous etes reconnecte. Detail : ${message}`;
+  }
+
+  if (message.includes("purchases_unique_supplier_invoice_guard_idx")) {
+    return "Doublon detecte : une facture fournisseur identique existe deja pour ce fournisseur, cette date, cette description et ce total TTC.";
   }
 
   return message;
@@ -1722,9 +1734,30 @@ export function RealWorkspace({
     return true;
   }
 
+  function findDuplicatePurchaseInvoice(form: typeof emptyInvoice, totalTtc: number, currentPurchaseId?: string) {
+    const normalizedDescription = normalizePurchaseDuplicateDescription(form.description);
+    const targetTtc = amountToCents(totalTtc);
+
+    return purchases.find((purchase) =>
+      purchase.id !== currentPurchaseId &&
+      purchase.user_id === currentCompanyUserId &&
+      purchase.party_id === form.partyId &&
+      purchase.invoice_date === form.date &&
+      normalizePurchaseDuplicateDescription(purchase.description) === normalizedDescription &&
+      amountToCents(purchase.amount_ttc) === targetTtc
+    );
+  }
+
   async function createPurchaseInvoice(form: typeof emptyInvoice, lines: PurchaseLineDraft[]) {
     const totals = summarizePurchaseLines(lines);
     const primaryVatRate = lines.length === 1 ? parseDecimalInput(lines[0].vatRate) : 0;
+    const duplicatePurchase = findDuplicatePurchaseInvoice(form, totals.amount_ttc);
+
+    if (duplicatePurchase) {
+      setError("Doublon detecte : cette facture fournisseur existe deja avec le meme fournisseur, la meme date, la meme description et le meme total TTC.");
+      return false;
+    }
+
     const { data, error: insertError } = await supabase.from("purchases").insert({
       user_id: currentCompanyUserId,
       party_id: form.partyId,
@@ -1759,6 +1792,13 @@ export function RealWorkspace({
   async function updatePurchaseInvoice(id: string, form: typeof emptyInvoice, lines: PurchaseLineDraft[]) {
     const totals = summarizePurchaseLines(lines);
     const primaryVatRate = lines.length === 1 ? parseDecimalInput(lines[0].vatRate) : 0;
+    const duplicatePurchase = findDuplicatePurchaseInvoice(form, totals.amount_ttc, id);
+
+    if (duplicatePurchase) {
+      setError("Doublon detecte : cette facture fournisseur existe deja avec le meme fournisseur, la meme date, la meme description et le meme total TTC.");
+      return false;
+    }
+
     const { error: updateError } = await supabase.from("purchases").update({
       party_id: form.partyId,
       invoice_date: form.date,
