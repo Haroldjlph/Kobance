@@ -3052,7 +3052,7 @@ export function RealWorkspace({
 
   const primaryMobilePages: Array<{ page: Page; icon: React.ReactNode; label: string }> = [
     { page: "dashboard", icon: <BarChart3 size={20} />, label: "Accueil" },
-    { page: "invoices", icon: <ReceiptText size={20} />, label: "Factures" },
+    { page: "invoices", icon: <ReceiptText size={20} />, label: "Factures client" },
     { page: "purchases", icon: <ShoppingCart size={20} />, label: "Factures fournisseurs" },
     { page: "bank", icon: <CreditCard size={20} />, label: "Banque" }
   ];
@@ -3099,7 +3099,7 @@ export function RealWorkspace({
             <Nav active={page === "clients"} icon={<Users size={18} />} label="Clients" onClick={() => goToPage("clients")} />
             <Nav active={page === "suppliers"} icon={<Building2 size={18} />} label="Fournisseurs" onClick={() => goToPage("suppliers")} />
             <Nav active={page === "quotes"} icon={<FileText size={18} />} label="Devis" onClick={() => goToPage("quotes")} />
-            <Nav active={page === "invoices"} icon={<ReceiptText size={18} />} label="Factures" onClick={() => goToPage("invoices")} />
+            <Nav active={page === "invoices"} icon={<ReceiptText size={18} />} label="Factures client" onClick={() => goToPage("invoices")} />
             <Nav active={page === "purchases"} icon={<ShoppingCart size={18} />} label="Factures fournisseurs" onClick={() => goToPage("purchases")} />
             <Nav active={page === "bank"} icon={<CreditCard size={18} />} label="Banque" onClick={() => goToPage("bank")} />
             <Nav active={page === "vat"} icon={<Scale size={18} />} label="TVA" onClick={() => goToPage("vat")} />
