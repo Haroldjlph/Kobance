@@ -1939,18 +1939,32 @@ export function RealWorkspace({
     return true;
   }
 
-  function findDuplicatePurchaseInvoice(form: typeof emptyInvoice, currentPurchaseId?: string) {
-    if (!form.supplierInvoiceNumber.trim()) {
-      return undefined;
+  async function hasDuplicateSupplierInvoiceNumber(form: typeof emptyInvoice, currentPurchaseId?: string) {
+    const supplierInvoiceNumber = form.supplierInvoiceNumber.trim();
+
+    if (!supplierInvoiceNumber) {
+      return false;
     }
 
-    const normalizedSupplierInvoiceNumber = normalizePurchaseDuplicateDescription(form.supplierInvoiceNumber);
+    let query = supabase
+      .from("purchases")
+      .select("id")
+      .eq("user_id", currentCompanyUserId)
+      .ilike("supplier_invoice_number", supplierInvoiceNumber)
+      .limit(1);
 
-    return purchases.find((purchase) =>
-      purchase.id !== currentPurchaseId &&
-      purchase.user_id === currentCompanyUserId &&
-      normalizePurchaseDuplicateDescription(purchase.supplier_invoice_number ?? "") === normalizedSupplierInvoiceNumber
-    );
+    if (currentPurchaseId) {
+      query = query.neq("id", currentPurchaseId);
+    }
+
+    const { data, error: duplicateError } = await query;
+
+    if (duplicateError) {
+      setError(displaySupabaseError(duplicateError.message));
+      return true;
+    }
+
+    return (data ?? []).length > 0;
   }
 
   function purchaseDescription(form: typeof emptyInvoice) {
@@ -1987,7 +2001,7 @@ export function RealWorkspace({
   async function createPurchaseInvoice(form: typeof emptyInvoice, lines: PurchaseLineDraft[]) {
     const totals = summarizePurchaseLines(lines);
     const primaryVatRate = lines.length === 1 ? parseDecimalInput(lines[0].vatRate) : 0;
-    const duplicatePurchase = findDuplicatePurchaseInvoice(form);
+    const duplicatePurchase = await hasDuplicateSupplierInvoiceNumber(form);
 
     if (duplicatePurchase) {
       setError("Une facture fournisseur avec ce numero existe deja.");
@@ -2003,6 +2017,7 @@ export function RealWorkspace({
     const { data, error: insertError } = await supabase.from("purchases").insert({
       user_id: currentCompanyUserId,
       party_id: supplierId,
+      supplier_invoice_number: form.supplierInvoiceNumber.trim(),
       invoice_date: form.date,
       description: purchaseDescription({ ...form, partyId: supplierId }),
       status: form.status,
@@ -2041,7 +2056,7 @@ export function RealWorkspace({
 
     const totals = summarizePurchaseLines(lines);
     const primaryVatRate = lines.length === 1 ? parseDecimalInput(lines[0].vatRate) : 0;
-    const duplicatePurchase = findDuplicatePurchaseInvoice(form, id);
+    const duplicatePurchase = await hasDuplicateSupplierInvoiceNumber(form, id);
 
     if (duplicatePurchase) {
       setError("Une facture fournisseur avec ce numero existe deja.");
@@ -2056,6 +2071,7 @@ export function RealWorkspace({
 
     const { error: updateError } = await supabase.from("purchases").update({
       party_id: supplierId,
+      supplier_invoice_number: form.supplierInvoiceNumber.trim(),
       invoice_date: form.date,
       description: purchaseDescription({ ...form, partyId: supplierId }),
       status: form.status === "DRAFT" ? "UNPAID" : form.status,
@@ -2828,6 +2844,11 @@ export function RealWorkspace({
 
     if (!purchaseForm.date) {
       setError("Selectionnez une date avant d'ajouter l'achat.");
+      return;
+    }
+
+    if (!purchaseForm.supplierInvoiceNumber.trim()) {
+      setError("Renseignez le numero de facture fournisseur avant de creer la facture.");
       return;
     }
 
@@ -4353,7 +4374,7 @@ function InvoicePage(props: {
           </select>
         ) : null}
         {!isSalesPage ? (
-          <input disabled={purchaseFormLocked} placeholder="Numero facture fournisseur (facultatif)" value={props.form.supplierInvoiceNumber} onChange={(e) => props.onChange({ ...props.form, supplierInvoiceNumber: e.target.value })} />
+          <input disabled={purchaseFormLocked} placeholder="Numero facture fournisseur" required value={props.form.supplierInvoiceNumber} onChange={(e) => props.onChange({ ...props.form, supplierInvoiceNumber: e.target.value })} />
         ) : null}
         <input disabled={purchaseFormLocked} type="date" required value={props.form.date} onChange={(e) => props.onChange({ ...props.form, date: e.target.value })} />
         <input disabled={purchaseFormLocked} placeholder={isSalesPage ? "Description" : "Description globale (facultatif)"} required={isSalesPage} value={props.form.description} onChange={(e) => props.onChange({ ...props.form, description: e.target.value })} />

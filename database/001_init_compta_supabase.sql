@@ -245,7 +245,7 @@ create table if not exists public.purchases (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   party_id uuid not null references public.suppliers(id) on delete restrict,
-  supplier_invoice_number text,
+  supplier_invoice_number text not null,
   invoice_date date not null,
   description text not null,
   amount_ht numeric(12, 2) not null,
@@ -335,6 +335,10 @@ alter table public.invoices add column if not exists discount_value numeric(12, 
 alter table public.invoices add column if not exists discount_amount numeric(12, 2) not null default 0;
 alter table public.invoices add column if not exists total_ht_before_discount numeric(12, 2) not null default 0;
 alter table public.purchases add column if not exists supplier_invoice_number text;
+update public.purchases
+set supplier_invoice_number = coalesce(nullif(btrim(supplier_invoice_number), ''), 'MIG-' || left(id::text, 8))
+where supplier_invoice_number is null or btrim(supplier_invoice_number) = '';
+alter table public.purchases alter column supplier_invoice_number set not null;
 alter table public.profiles add column if not exists logo_data_url text;
 alter table public.bank_transactions add column if not exists linked_invoice_id uuid references public.invoices(id) on delete set null;
 alter table public.bank_transactions add column if not exists linked_purchase_id uuid references public.purchases(id) on delete set null;
@@ -372,8 +376,7 @@ create index if not exists purchases_user_id_invoice_date_idx on public.purchase
 do $$
 begin
   create unique index purchases_unique_supplier_invoice_number_idx
-  on public.purchases(user_id, lower(btrim(supplier_invoice_number)))
-  where supplier_invoice_number is not null and btrim(supplier_invoice_number) <> '';
+  on public.purchases(user_id, lower(btrim(supplier_invoice_number)));
 exception
   when duplicate_table or duplicate_object then null;
   when unique_violation then
