@@ -105,10 +105,12 @@ $$;
 
 do $$
 begin
-  create type public.invoice_status as enum ('PAID', 'UNPAID');
+  create type public.invoice_status as enum ('DRAFT', 'PAID', 'UNPAID');
 exception
   when duplicate_object then null;
 end $$;
+
+alter type public.invoice_status add value if not exists 'DRAFT';
 
 do $$
 begin
@@ -128,6 +130,10 @@ create table if not exists public.invoices (
   total_ht numeric(12, 2) not null default 0,
   total_vat numeric(12, 2) not null default 0,
   total_ttc numeric(12, 2) not null default 0,
+  discount_type text not null default 'NONE',
+  discount_value numeric(12, 2) not null default 0,
+  discount_amount numeric(12, 2) not null default 0,
+  total_ht_before_discount numeric(12, 2) not null default 0,
   notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -239,6 +245,7 @@ create table if not exists public.purchases (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   party_id uuid not null references public.suppliers(id) on delete restrict,
+  supplier_invoice_number text not null,
   invoice_date date not null,
   description text not null,
   amount_ht numeric(12, 2) not null,
@@ -254,7 +261,7 @@ create table if not exists public.purchase_lines (
   id uuid primary key default gen_random_uuid(),
   purchase_id uuid not null references public.purchases(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
-  description text not null,
+  description text not null default '',
   amount_ht numeric(12, 2) not null,
   vat_rate numeric(4, 2) not null default 20,
   vat_amount numeric(12, 2) not null,
@@ -323,6 +330,15 @@ grant execute on function public.is_company_member(uuid) to authenticated;
 alter table public.sales add column if not exists article_id uuid references public.articles(id) on delete set null;
 alter table public.sales add column if not exists discount_type text not null default 'NONE';
 alter table public.sales add column if not exists discount_value numeric(12, 2) not null default 0;
+alter table public.invoices add column if not exists discount_type text not null default 'NONE';
+alter table public.invoices add column if not exists discount_value numeric(12, 2) not null default 0;
+alter table public.invoices add column if not exists discount_amount numeric(12, 2) not null default 0;
+alter table public.invoices add column if not exists total_ht_before_discount numeric(12, 2) not null default 0;
+alter table public.purchases add column if not exists supplier_invoice_number text;
+update public.purchases
+set supplier_invoice_number = coalesce(nullif(btrim(supplier_invoice_number), ''), 'MIG-' || left(id::text, 8))
+where supplier_invoice_number is null or btrim(supplier_invoice_number) = '';
+alter table public.purchases alter column supplier_invoice_number set not null;
 alter table public.profiles add column if not exists logo_data_url text;
 alter table public.bank_transactions add column if not exists linked_invoice_id uuid references public.invoices(id) on delete set null;
 alter table public.bank_transactions add column if not exists linked_purchase_id uuid references public.purchases(id) on delete set null;
@@ -357,6 +373,15 @@ create index if not exists sales_user_id_idx on public.sales(user_id);
 create index if not exists sales_user_id_invoice_date_idx on public.sales(user_id, invoice_date);
 create index if not exists purchases_user_id_idx on public.purchases(user_id);
 create index if not exists purchases_user_id_invoice_date_idx on public.purchases(user_id, invoice_date);
+do $$
+begin
+  create unique index purchases_unique_supplier_invoice_number_idx
+  on public.purchases(user_id, lower(btrim(supplier_invoice_number)));
+exception
+  when duplicate_table or duplicate_object then null;
+  when unique_violation then
+    raise notice 'Des doublons de numero de facture fournisseur existent deja. Corrigez-les avant de rejouer cette contrainte.';
+end $$;
 create index if not exists purchase_lines_purchase_id_idx on public.purchase_lines(purchase_id);
 create index if not exists purchase_lines_user_id_idx on public.purchase_lines(user_id);
 

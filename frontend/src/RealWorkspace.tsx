@@ -24,7 +24,7 @@ import { supabase } from "./supabase";
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 type Page = "dashboard" | "company" | "articles" | "clients" | "suppliers" | "quotes" | "invoices" | "sales" | "purchases" | "bank" | "vat" | "monthly";
-type Status = "PAID" | "UNPAID";
+type Status = "DRAFT" | "PAID" | "UNPAID";
 type DiscountType = "NONE" | "PERCENT" | "AMOUNT";
 type DocumentStatus = "DRAFT" | "ISSUED" | "PAID" | "CANCELED";
 type BankTransactionType = "INCOME" | "EXPENSE";
@@ -81,6 +81,7 @@ type Invoice = {
   amount_ttc: number;
   discount_type?: DiscountType;
   discount_value?: number;
+  supplier_invoice_number?: string | null;
   status: Status;
 };
 
@@ -122,6 +123,10 @@ type InvoiceDocument = {
   total_ht: number;
   total_vat: number;
   total_ttc: number;
+  discount_type?: DiscountType;
+  discount_value?: number;
+  discount_amount?: number;
+  total_ht_before_discount?: number;
   notes: string | null;
   client?: Party;
   invoice_lines?: InvoiceLine[];
@@ -259,7 +264,13 @@ const emptyInvoice = {
   vatRate: "20",
   discountType: "NONE" as DiscountType,
   discountValue: "",
+  supplierInvoiceNumber: "",
   status: "UNPAID" as Status
+};
+
+const emptyPurchaseInvoice = {
+  ...emptyInvoice,
+  status: "DRAFT" as Status
 };
 
 const emptyPurchaseLineDraft = {
@@ -287,6 +298,8 @@ const emptyInvoiceDocument = {
   clientId: "",
   invoiceDate: new Date().toISOString().slice(0, 10),
   dueDate: "",
+  discountType: "NONE" as DiscountType,
+  discountValue: "",
   notes: ""
 };
 
@@ -328,6 +341,25 @@ const monthOptions = [
   { value: 12, label: "Decembre" }
 ];
 
+type DateFilterMode = "today" | "week" | "month" | "lastMonth" | "year" | "lastYear" | "custom";
+
+function toDateInputValue(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function addDays(date: Date, days: number) {
+  const nextDate = new Date(date);
+  nextDate.setDate(nextDate.getDate() + days);
+  return nextDate;
+}
+
+function startOfWeek(date: Date) {
+  const nextDate = new Date(date);
+  const day = nextDate.getDay() || 7;
+  nextDate.setDate(nextDate.getDate() - day + 1);
+  return nextDate;
+}
+
 function parseDecimalInput(value: string) {
   const parsed = Number(String(value).replace(",", "."));
 
@@ -366,6 +398,38 @@ function calculateLineAmounts(quantity: string, unitPriceHt: string, vatRate: st
   return calculateSaleAmounts(String(baseHt), vatRate, discountType, discountValue);
 }
 
+function calculateGlobalDiscount(totalHt: number, discountType: DiscountType = "NONE", discountValue = 0) {
+  if (discountType === "PERCENT") {
+    return Math.round(totalHt * Math.min(Math.max(discountValue, 0), 100)) / 100;
+  }
+
+  if (discountType === "AMOUNT") {
+    return Math.min(Math.max(discountValue, 0), totalHt);
+  }
+
+  return 0;
+}
+
+function calculateInvoiceTotalsWithGlobalDiscount(
+  lines: Array<{ line_ht: number; line_vat: number }>,
+  discountType: DiscountType = "NONE",
+  discountValue = 0
+) {
+  const totalHtBeforeDiscount = lines.reduce((sum, line) => sum + Number(line.line_ht), 0);
+  const discountAmount = calculateGlobalDiscount(totalHtBeforeDiscount, discountType, discountValue);
+  const discountRatio = totalHtBeforeDiscount > 0 ? discountAmount / totalHtBeforeDiscount : 0;
+  const totalVat = lines.reduce((sum, line) => sum + Number(line.line_vat) * (1 - discountRatio), 0);
+  const totalHt = Math.max(totalHtBeforeDiscount - discountAmount, 0);
+
+  return {
+    discount_amount: Math.round(discountAmount * 100) / 100,
+    total_ht: Math.round(totalHt * 100) / 100,
+    total_ht_before_discount: Math.round(totalHtBeforeDiscount * 100) / 100,
+    total_ttc: Math.round((totalHt + totalVat) * 100) / 100,
+    total_vat: Math.round(totalVat * 100) / 100
+  };
+}
+
 function summarizePurchaseLines(lines: PurchaseLineDraft[]) {
   return lines.reduce((totals, line) => {
     const amounts = calculateAmounts(line.amountHt, line.vatRate);
@@ -380,10 +444,6 @@ function summarizePurchaseLines(lines: PurchaseLineDraft[]) {
 
 function normalizePurchaseDuplicateDescription(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-function amountToCents(value: number | string) {
-  return Math.round(Number(value) * 100);
 }
 
 const namePattern = /^[A-Za-zÀ-ÖØ-öø-ÿ' -]+$/;
@@ -1001,8 +1061,8 @@ function displaySupabaseError(message: string) {
     return `Acces refuse par Supabase RLS. Verifiez que le SQL a ete rejoue et que vous etes reconnecte. Detail : ${message}`;
   }
 
-  if (message.includes("purchases_unique_supplier_invoice_guard_idx")) {
-    return "Doublon detecte : une facture fournisseur identique existe deja pour ce fournisseur, cette date, cette description et ce total TTC.";
+  if (message.includes("purchases_unique_supplier_invoice_guard_idx") || message.includes("purchases_unique_supplier_invoice_number_idx")) {
+    return "Une facture fournisseur avec ce numero existe deja.";
   }
 
   return message;
@@ -1217,7 +1277,9 @@ function generateInvoiceDocumentFromLines(invoice: InvoiceDocument, profile: Pro
     <tbody>${rows}</tbody>
   </table>
   <div class="totals">
-    <div class="total-row"><span>Total HT</span><strong>${formatEuro(invoice.total_ht)}</strong></div>
+    <div class="total-row"><span>Total HT avant remise</span><strong>${formatEuro(invoice.total_ht_before_discount ?? invoice.total_ht)}</strong></div>
+    <div class="total-row"><span>Remise globale</span><strong>${formatEuro(invoice.discount_amount ?? 0)}</strong></div>
+    <div class="total-row"><span>Total HT apres remise</span><strong>${formatEuro(invoice.total_ht)}</strong></div>
     <div class="total-row"><span>TVA</span><strong>${formatEuro(invoice.total_vat)}</strong></div>
     <div class="total-row grand"><span>Total TTC</span><strong>${formatEuro(invoice.total_ttc)}</strong></div>
   </div>
@@ -1369,6 +1431,9 @@ export function RealWorkspace({
   const [creditNotes, setCreditNotes] = useState<CreditNote[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [purchases, setPurchases] = useState<Purchase[]>([]);
+  const [annualInvoiceDocuments, setAnnualInvoiceDocuments] = useState<InvoiceDocument[]>([]);
+  const [annualCreditNotes, setAnnualCreditNotes] = useState<CreditNote[]>([]);
+  const [annualPurchases, setAnnualPurchases] = useState<Purchase[]>([]);
   const [bankTransactions, setBankTransactions] = useState<BankTransaction[]>([]);
   const [clientForm, setClientForm] = useState(emptyParty);
   const [supplierForm, setSupplierForm] = useState(emptyParty);
@@ -1380,7 +1445,7 @@ export function RealWorkspace({
   const [invoiceLineForm, setInvoiceLineForm] = useState(emptyInvoiceLine);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [saleForm, setSaleForm] = useState(emptyInvoice);
-  const [purchaseForm, setPurchaseForm] = useState(emptyInvoice);
+  const [purchaseForm, setPurchaseForm] = useState(emptyPurchaseInvoice);
   const [purchaseLineDrafts, setPurchaseLineDrafts] = useState<PurchaseLineDraft[]>([{ ...emptyPurchaseLineDraft }]);
   const [bankTransactionForm, setBankTransactionForm] = useState(emptyBankTransaction);
   const [editingClientId, setEditingClientId] = useState<string | null>(null);
@@ -1394,13 +1459,54 @@ export function RealWorkspace({
   const now = new Date();
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
+  const [dateFilterMode, setDateFilterMode] = useState<DateFilterMode>("month");
+  const [customStartDate, setCustomStartDate] = useState(toDateInputValue(new Date(now.getFullYear(), now.getMonth(), 1)));
+  const [customEndDate, setCustomEndDate] = useState(toDateInputValue(new Date(now.getFullYear(), now.getMonth() + 1, 1)));
 
   const period = useMemo(() => {
-    const start = new Date(Date.UTC(selectedYear, selectedMonth - 1, 1)).toISOString().slice(0, 10);
-    const end = new Date(Date.UTC(selectedYear, selectedMonth, 1)).toISOString().slice(0, 10);
+    const today = new Date();
+    const monthStart = new Date(selectedYear, selectedMonth - 1, 1);
+    const lastMonthStart = new Date(selectedYear, selectedMonth - 2, 1);
+    const yearStart = new Date(selectedYear, 0, 1);
+    const lastYearStart = new Date(selectedYear - 1, 0, 1);
+
+    if (dateFilterMode === "today") {
+      return { start: toDateInputValue(today), end: toDateInputValue(addDays(today, 1)) };
+    }
+
+    if (dateFilterMode === "week") {
+      const start = startOfWeek(today);
+      return { start: toDateInputValue(start), end: toDateInputValue(addDays(start, 7)) };
+    }
+
+    if (dateFilterMode === "lastMonth") {
+      return { start: toDateInputValue(lastMonthStart), end: toDateInputValue(new Date(selectedYear, selectedMonth - 1, 1)) };
+    }
+
+    if (dateFilterMode === "year") {
+      return { start: toDateInputValue(yearStart), end: toDateInputValue(new Date(selectedYear + 1, 0, 1)) };
+    }
+
+    if (dateFilterMode === "lastYear") {
+      return { start: toDateInputValue(lastYearStart), end: toDateInputValue(new Date(selectedYear, 0, 1)) };
+    }
+
+    if (dateFilterMode === "custom") {
+      return { start: customStartDate, end: customEndDate };
+    }
+
+    const start = toDateInputValue(monthStart);
+    const end = toDateInputValue(new Date(selectedYear, selectedMonth, 1));
 
     return { start, end };
-  }, [selectedMonth, selectedYear]);
+  }, [customEndDate, customStartDate, dateFilterMode, selectedMonth, selectedYear]);
+
+  const annualPeriod = useMemo(() => {
+    const start = new Date(Date.UTC(selectedYear, 0, 1)).toISOString().slice(0, 10);
+    const end = new Date(Date.UTC(selectedYear + 1, 0, 1)).toISOString().slice(0, 10);
+
+    return { start, end };
+  }, [selectedYear]);
 
   const isCompanyOwner = activeCompanyUserId === userId;
   const currentCompanyUserId = activeCompanyUserId;
@@ -1434,7 +1540,7 @@ export function RealWorkspace({
       setActiveCompanyUserId(companyUserId);
     }
 
-    const [profileRes, articlesRes, clientsRes, suppliersRes, quotesRes, invoicesRes, creditNotesRes, salesRes, purchasesRes, bankTransactionsRes] = await Promise.all([
+    const [profileRes, articlesRes, clientsRes, suppliersRes, quotesRes, invoicesRes, creditNotesRes, salesRes, purchasesRes, bankTransactionsRes, annualInvoicesRes, annualCreditNotesRes, annualPurchasesRes] = await Promise.all([
       supabase.from("profiles").select("*").eq("user_id", companyUserId).maybeSingle(),
       supabase.from("articles").select("*").eq("user_id", companyUserId).order("name"),
       supabase.from("clients").select("*").eq("user_id", companyUserId).order("name"),
@@ -1480,10 +1586,31 @@ export function RealWorkspace({
         .eq("user_id", companyUserId)
         .gte("transaction_date", period.start)
         .lt("transaction_date", period.end)
-        .order("transaction_date", { ascending: false })
+        .order("transaction_date", { ascending: false }),
+      supabase
+        .from("invoices")
+        .select("*, client:clients(*), invoice_lines(*)")
+        .eq("user_id", companyUserId)
+        .gte("invoice_date", annualPeriod.start)
+        .lt("invoice_date", annualPeriod.end)
+        .order("invoice_date", { ascending: false }),
+      supabase
+        .from("credit_notes")
+        .select("*, client:clients(*), invoice:invoices(*), credit_note_lines(*)")
+        .eq("user_id", companyUserId)
+        .gte("credit_note_date", annualPeriod.start)
+        .lt("credit_note_date", annualPeriod.end)
+        .order("credit_note_date", { ascending: false }),
+      supabase
+        .from("purchases")
+        .select("*, supplier:suppliers(*), purchase_lines(*)")
+        .eq("user_id", companyUserId)
+        .gte("invoice_date", annualPeriod.start)
+        .lt("invoice_date", annualPeriod.end)
+        .order("invoice_date", { ascending: false })
     ]);
 
-    const firstError = profileRes.error ?? articlesRes.error ?? clientsRes.error ?? suppliersRes.error ?? quotesRes.error ?? invoicesRes.error ?? creditNotesRes.error ?? salesRes.error ?? purchasesRes.error ?? bankTransactionsRes.error;
+    const firstError = profileRes.error ?? articlesRes.error ?? clientsRes.error ?? suppliersRes.error ?? quotesRes.error ?? invoicesRes.error ?? creditNotesRes.error ?? salesRes.error ?? purchasesRes.error ?? bankTransactionsRes.error ?? annualInvoicesRes.error ?? annualCreditNotesRes.error ?? annualPurchasesRes.error;
 
     if (firstError) {
       setError(firstError.message);
@@ -1508,12 +1635,15 @@ export function RealWorkspace({
     setCreditNotes((creditNotesRes.data ?? []) as CreditNote[]);
     setSales((salesRes.data ?? []) as Sale[]);
     setPurchases((purchasesRes.data ?? []) as Purchase[]);
+    setAnnualInvoiceDocuments((annualInvoicesRes.data ?? []) as InvoiceDocument[]);
+    setAnnualCreditNotes((annualCreditNotesRes.data ?? []) as CreditNote[]);
+    setAnnualPurchases((annualPurchasesRes.data ?? []) as Purchase[]);
     setBankTransactions((bankTransactionsRes.data ?? []) as BankTransaction[]);
   }
 
   useEffect(() => {
     void loadData();
-  }, [activeCompanyUserId, period.start, period.end]);
+  }, [activeCompanyUserId, annualPeriod.start, annualPeriod.end, period.start, period.end]);
 
   const totals = useMemo(() => {
     const accountingInvoices = invoiceDocuments.filter((invoice) => invoice.status === "ISSUED" || invoice.status === "PAID");
@@ -1553,6 +1683,8 @@ export function RealWorkspace({
       purchasesTtc,
       collectedVat,
       deductibleVat,
+      invoiceCount: accountingInvoices.length,
+      purchaseCount: purchases.length,
       vatDue: collectedVat - deductibleVat,
       profit: salesHt - purchasesHt,
       bankIncome,
@@ -1562,6 +1694,77 @@ export function RealWorkspace({
       bankReconciledCount
     };
   }, [bankTransactions, creditNotes, invoiceDocuments, purchases]);
+
+  const annualSummary = useMemo(() => {
+    function summarizeMonth(month: number) {
+      const monthInvoices = annualInvoiceDocuments.filter((invoice) => new Date(invoice.invoice_date).getMonth() + 1 === month);
+      const monthCreditNotes = annualCreditNotes.filter((creditNote) => new Date(creditNote.credit_note_date).getMonth() + 1 === month);
+      const monthPurchases = annualPurchases.filter((purchase) => new Date(purchase.invoice_date).getMonth() + 1 === month);
+      const accountingInvoices = monthInvoices.filter((invoice) => invoice.status === "ISSUED" || invoice.status === "PAID");
+      const creditSummary = monthCreditNotes.reduce(
+        (acc, item) => {
+          const summary = summarizeCreditNote(item);
+
+          return {
+            total_ht: acc.total_ht + summary.total_ht,
+            total_vat: acc.total_vat + summary.total_vat,
+            total_ttc: acc.total_ttc + summary.total_ttc
+          };
+        },
+        { total_ht: 0, total_vat: 0, total_ttc: 0 }
+      );
+      const salesHt = accountingInvoices.reduce((sum, item) => sum + Number(item.total_ht), 0) - creditSummary.total_ht;
+      const salesTtc = accountingInvoices.reduce((sum, item) => sum + Number(item.total_ttc), 0) - creditSummary.total_ttc;
+      const purchasesHt = monthPurchases.reduce((sum, item) => sum + Number(item.amount_ht), 0);
+      const purchasesTtc = monthPurchases.reduce((sum, item) => sum + Number(item.amount_ttc), 0);
+      const collectedVat = accountingInvoices.reduce((sum, item) => sum + Number(item.total_vat), 0) - creditSummary.total_vat;
+      const deductibleVat = monthPurchases.reduce((sum, item) => sum + Number(item.vat_amount), 0);
+
+      return {
+        collectedVat,
+        deductibleVat,
+        invoiceCount: accountingInvoices.length,
+        month,
+        profit: salesHt - purchasesHt,
+        purchaseCount: monthPurchases.length,
+        purchasesHt,
+        purchasesTtc,
+        salesHt,
+        salesTtc,
+        vatDue: collectedVat - deductibleVat
+      };
+    }
+
+    const rows = monthOptions.map((month) => summarizeMonth(month.value));
+    const yearTotals = rows.reduce(
+      (acc, row) => ({
+        collectedVat: acc.collectedVat + row.collectedVat,
+        deductibleVat: acc.deductibleVat + row.deductibleVat,
+        invoiceCount: acc.invoiceCount + row.invoiceCount,
+        profit: acc.profit + row.profit,
+        purchaseCount: acc.purchaseCount + row.purchaseCount,
+        purchasesHt: acc.purchasesHt + row.purchasesHt,
+        purchasesTtc: acc.purchasesTtc + row.purchasesTtc,
+        salesHt: acc.salesHt + row.salesHt,
+        salesTtc: acc.salesTtc + row.salesTtc,
+        vatDue: acc.vatDue + row.vatDue
+      }),
+      {
+        collectedVat: 0,
+        deductibleVat: 0,
+        invoiceCount: 0,
+        profit: 0,
+        purchaseCount: 0,
+        purchasesHt: 0,
+        purchasesTtc: 0,
+        salesHt: 0,
+        salesTtc: 0,
+        vatDue: 0
+      }
+    );
+
+    return { rows, yearTotals };
+  }, [annualCreditNotes, annualInvoiceDocuments, annualPurchases]);
 
   async function createParty(table: "clients" | "suppliers", form: typeof emptyParty) {
     if (!isValidName(form.name)) {
@@ -1734,33 +1937,30 @@ export function RealWorkspace({
     return true;
   }
 
-  function findDuplicatePurchaseInvoice(form: typeof emptyInvoice, totalTtc: number, currentPurchaseId?: string) {
-    const normalizedDescription = normalizePurchaseDuplicateDescription(form.description);
-    const targetTtc = amountToCents(totalTtc);
+  function findDuplicatePurchaseInvoice(form: typeof emptyInvoice, currentPurchaseId?: string) {
+    const normalizedSupplierInvoiceNumber = normalizePurchaseDuplicateDescription(form.supplierInvoiceNumber);
 
     return purchases.find((purchase) =>
       purchase.id !== currentPurchaseId &&
       purchase.user_id === currentCompanyUserId &&
-      purchase.party_id === form.partyId &&
-      purchase.invoice_date === form.date &&
-      normalizePurchaseDuplicateDescription(purchase.description) === normalizedDescription &&
-      amountToCents(purchase.amount_ttc) === targetTtc
+      normalizePurchaseDuplicateDescription(purchase.supplier_invoice_number ?? "") === normalizedSupplierInvoiceNumber
     );
   }
 
   async function createPurchaseInvoice(form: typeof emptyInvoice, lines: PurchaseLineDraft[]) {
     const totals = summarizePurchaseLines(lines);
     const primaryVatRate = lines.length === 1 ? parseDecimalInput(lines[0].vatRate) : 0;
-    const duplicatePurchase = findDuplicatePurchaseInvoice(form, totals.amount_ttc);
+    const duplicatePurchase = findDuplicatePurchaseInvoice(form);
 
     if (duplicatePurchase) {
-      setError("Doublon detecte : cette facture fournisseur existe deja avec le meme fournisseur, la meme date, la meme description et le meme total TTC.");
+      setError("Une facture fournisseur avec ce numero existe deja.");
       return false;
     }
 
     const { data, error: insertError } = await supabase.from("purchases").insert({
       user_id: currentCompanyUserId,
       party_id: form.partyId,
+      supplier_invoice_number: form.supplierInvoiceNumber.trim(),
       invoice_date: form.date,
       description: form.description,
       status: form.status,
@@ -1790,17 +1990,25 @@ export function RealWorkspace({
   }
 
   async function updatePurchaseInvoice(id: string, form: typeof emptyInvoice, lines: PurchaseLineDraft[]) {
+    const currentPurchase = purchases.find((purchase) => purchase.id === id);
+
+    if (currentPurchase && currentPurchase.status !== "DRAFT") {
+      setError("Facture fournisseur verrouillee : seules les factures en brouillon peuvent etre modifiees.");
+      return false;
+    }
+
     const totals = summarizePurchaseLines(lines);
     const primaryVatRate = lines.length === 1 ? parseDecimalInput(lines[0].vatRate) : 0;
-    const duplicatePurchase = findDuplicatePurchaseInvoice(form, totals.amount_ttc, id);
+    const duplicatePurchase = findDuplicatePurchaseInvoice(form, id);
 
     if (duplicatePurchase) {
-      setError("Doublon detecte : cette facture fournisseur existe deja avec le meme fournisseur, la meme date, la meme description et le meme total TTC.");
+      setError("Une facture fournisseur avec ce numero existe deja.");
       return false;
     }
 
     const { error: updateError } = await supabase.from("purchases").update({
       party_id: form.partyId,
+      supplier_invoice_number: form.supplierInvoiceNumber.trim(),
       invoice_date: form.date,
       description: form.description,
       status: form.status,
@@ -1983,6 +2191,7 @@ export function RealWorkspace({
   }
 
   async function recalculateInvoiceTotals(invoiceId: string) {
+    const invoice = invoiceDocuments.find((item) => item.id === invoiceId);
     const { data, error: linesError } = await supabase
       .from("invoice_lines")
       .select("line_ht,line_vat,line_ttc")
@@ -1993,13 +2202,10 @@ export function RealWorkspace({
       return;
     }
 
-    const totals = (data ?? []).reduce(
-      (acc, line) => ({
-        total_ht: acc.total_ht + Number(line.line_ht),
-        total_vat: acc.total_vat + Number(line.line_vat),
-        total_ttc: acc.total_ttc + Number(line.line_ttc)
-      }),
-      { total_ht: 0, total_vat: 0, total_ttc: 0 }
+    const totals = calculateInvoiceTotalsWithGlobalDiscount(
+      data ?? [],
+      invoice?.discount_type ?? "NONE",
+      Number(invoice?.discount_value ?? 0)
     );
 
     const { error: updateError } = await supabase.from("invoices").update(totals).eq("id", invoiceId);
@@ -2198,6 +2404,10 @@ export function RealWorkspace({
       invoice_number: invoiceNumber,
       invoice_date: invoiceDocumentForm.invoiceDate,
       due_date: invoiceDocumentForm.dueDate || null,
+      discount_type: invoiceDocumentForm.discountType,
+      discount_value: Number(invoiceDocumentForm.discountValue || 0),
+      discount_amount: 0,
+      total_ht_before_discount: 0,
       notes: invoiceDocumentForm.notes || null
     }).select("id").single();
 
@@ -2208,6 +2418,37 @@ export function RealWorkspace({
 
     setSelectedInvoiceId(data.id);
     setInvoiceDocumentForm(emptyInvoiceDocument);
+    await loadData();
+  }
+
+  async function updateInvoiceGlobalDiscount(invoice: InvoiceDocument, discountType: DiscountType, discountValue: string) {
+    if (invoice.status !== "DRAFT") {
+      setError("Facture verrouillee : la remise globale se modifie uniquement en brouillon.");
+      return;
+    }
+
+    const { data, error: linesError } = await supabase
+      .from("invoice_lines")
+      .select("line_ht,line_vat")
+      .eq("invoice_id", invoice.id);
+
+    if (linesError) {
+      setError(displaySupabaseError(linesError.message));
+      return;
+    }
+
+    const totals = calculateInvoiceTotalsWithGlobalDiscount(data ?? [], discountType, Number(discountValue || 0));
+    const { error: updateError } = await supabase.from("invoices").update({
+      discount_type: discountType,
+      discount_value: Number(discountValue || 0),
+      ...totals
+    }).eq("id", invoice.id);
+
+    if (updateError) {
+      setError(displaySupabaseError(updateError.message));
+      return;
+    }
+
     await loadData();
   }
 
@@ -2392,6 +2633,15 @@ export function RealWorkspace({
   }
 
   async function remove(table: "articles" | "clients" | "suppliers" | "company_members" | "quotes" | "quote_lines" | "invoices" | "invoice_lines" | "sales" | "purchases" | "bank_transactions", id: string) {
+    if (table === "purchases") {
+      const purchase = purchases.find((item) => item.id === id);
+
+      if (purchase && purchase.status !== "DRAFT") {
+        setError("Facture fournisseur verrouillee : seules les factures en brouillon peuvent etre supprimees.");
+        return;
+      }
+    }
+
     if (!window.confirm("Confirmer la suppression ?")) {
       return;
     }
@@ -2544,9 +2794,14 @@ export function RealWorkspace({
       return;
     }
 
-    const validLines = purchaseLineDrafts.filter((line) => line.description.trim() && parseDecimalInput(line.amountHt) > 0);
+    if (!purchaseForm.supplierInvoiceNumber.trim()) {
+      setError("Renseignez le numero de facture fournisseur avant d'enregistrer.");
+      return;
+    }
+
+    const validLines = purchaseLineDrafts.filter((line) => parseDecimalInput(line.amountHt) > 0);
     if (validLines.length === 0 || validLines.length !== purchaseLineDrafts.length) {
-      setError("Chaque ligne d'achat doit avoir une description et un montant HT superieur a 0.");
+      setError("Chaque ligne d'achat doit avoir un montant HT superieur a 0.");
       return;
     }
 
@@ -2557,7 +2812,7 @@ export function RealWorkspace({
     void action.then((success) => {
       if (success) {
         movePeriodToDate(purchaseForm.date);
-        setPurchaseForm(emptyInvoice);
+        setPurchaseForm(emptyPurchaseInvoice);
         setPurchaseLineDrafts([{ ...emptyPurchaseLineDraft }]);
         setEditingPurchaseId(null);
         setPurchasePdfProof(null);
@@ -2583,7 +2838,8 @@ export function RealWorkspace({
         discountType: "NONE",
         discountValue: "",
         partyId: parsed.partyId,
-        status: "UNPAID",
+        status: "DRAFT",
+        supplierInvoiceNumber: "",
         vatRate: parsed.vatRate
       });
       setPurchaseLineDrafts([{
@@ -2648,6 +2904,7 @@ export function RealWorkspace({
       vatRate: String(row.vat_rate),
       discountType: row.discount_type ?? "NONE",
       discountValue: String(row.discount_value ?? ""),
+      supplierInvoiceNumber: row.supplier_invoice_number ?? "",
       status: row.status
     };
 
@@ -2777,10 +3034,26 @@ export function RealWorkspace({
     setMobileMoreOpen(false);
   }
 
+  function selectInvoiceDocument(id: string) {
+    const invoice = invoiceDocuments.find((item) => item.id === id);
+
+    setSelectedInvoiceId(id);
+    if (invoice) {
+      setInvoiceDocumentForm({
+        clientId: invoice.client_id,
+        invoiceDate: invoice.invoice_date,
+        dueDate: invoice.due_date ?? "",
+        discountType: invoice.discount_type ?? "NONE",
+        discountValue: String(invoice.discount_value ?? ""),
+        notes: invoice.notes ?? ""
+      });
+    }
+  }
+
   const primaryMobilePages: Array<{ page: Page; icon: React.ReactNode; label: string }> = [
     { page: "dashboard", icon: <BarChart3 size={20} />, label: "Accueil" },
     { page: "invoices", icon: <ReceiptText size={20} />, label: "Factures" },
-    { page: "purchases", icon: <ShoppingCart size={20} />, label: "Factures d'achats" },
+    { page: "purchases", icon: <ShoppingCart size={20} />, label: "Factures fournisseurs" },
     { page: "bank", icon: <CreditCard size={20} />, label: "Banque" }
   ];
 
@@ -2827,7 +3100,7 @@ export function RealWorkspace({
             <Nav active={page === "suppliers"} icon={<Building2 size={18} />} label="Fournisseurs" onClick={() => goToPage("suppliers")} />
             <Nav active={page === "quotes"} icon={<FileText size={18} />} label="Devis" onClick={() => goToPage("quotes")} />
             <Nav active={page === "invoices"} icon={<ReceiptText size={18} />} label="Factures" onClick={() => goToPage("invoices")} />
-            <Nav active={page === "purchases"} icon={<ShoppingCart size={18} />} label="Factures d'achats" onClick={() => goToPage("purchases")} />
+            <Nav active={page === "purchases"} icon={<ShoppingCart size={18} />} label="Factures fournisseurs" onClick={() => goToPage("purchases")} />
             <Nav active={page === "bank"} icon={<CreditCard size={18} />} label="Banque" onClick={() => goToPage("bank")} />
             <Nav active={page === "vat"} icon={<Scale size={18} />} label="TVA" onClick={() => goToPage("vat")} />
             <Nav active={page === "monthly"} icon={<CalendarDays size={18} />} label="Recap mensuel" onClick={() => goToPage("monthly")} />
@@ -2842,19 +3115,25 @@ export function RealWorkspace({
       <section className="dashboard-content">
         {error ? <p className="error-message">{error}</p> : null}
         <PeriodControls
+          customEndDate={customEndDate}
+          customStartDate={customStartDate}
+          filterMode={dateFilterMode}
           month={selectedMonth}
+          onCustomEndDateChange={setCustomEndDate}
+          onCustomStartDateChange={setCustomStartDate}
+          onFilterModeChange={setDateFilterMode}
           onMonthChange={setSelectedMonth}
           onYearChange={setSelectedYear}
           year={selectedYear}
         />
-        {page === "dashboard" ? <Dashboard month={selectedMonth} totals={totals} year={selectedYear} /> : null}
+        {page === "dashboard" ? <Dashboard annualSummary={annualSummary} month={selectedMonth} totals={totals} year={selectedYear} /> : null}
         {page === "company" ? <CompanyPage form={profileForm} isOwner={isCompanyOwner} memberEmail={memberEmail} members={teamMembers} onChange={setProfileForm} onInvite={inviteCompanyMember} onMemberEmailChange={setMemberEmail} onRemoveMember={removeCompanyMember} onSubmit={saveProfile} profile={profile} userEmail={userEmail} /> : null}
         {page === "articles" ? <ArticlesPage editingId={editingArticleId} form={articleForm} onCancel={() => { setArticleForm(emptyArticle); setEditingArticleId(null); }} onChange={setArticleForm} onDelete={(id) => remove("articles", id)} onEdit={editArticle} onImport={importArticles} onSubmit={submitArticle} rows={articles} /> : null}
         {page === "clients" ? <PartyPage editingId={editingClientId} form={clientForm} onCancel={() => { setClientForm(emptyParty); setEditingClientId(null); }} onChange={setClientForm} onEdit={(row) => editParty(row, "client")} onImport={(file) => importParties("clients", file)} onSubmit={submitClient} rows={clients} title="Clients" onDelete={(id) => remove("clients", id)} /> : null}
         {page === "suppliers" ? <PartyPage editingId={editingSupplierId} form={supplierForm} onCancel={() => { setSupplierForm(emptyParty); setEditingSupplierId(null); }} onChange={setSupplierForm} onEdit={(row) => editParty(row, "supplier")} onImport={(file) => importParties("suppliers", file)} onSubmit={submitSupplier} rows={suppliers} title="Fournisseurs" onDelete={(id) => remove("suppliers", id)} /> : null}
         {page === "quotes" ? <QuotesPage articles={articles} clients={clients} form={quoteDocumentForm} lineForm={quoteLineForm} onChange={setQuoteDocumentForm} onConvert={convertQuoteToInvoice} onDelete={deleteQuoteDocument} onDeleteLine={deleteQuoteLine} onLineChange={setQuoteLineForm} onLineSubmit={addQuoteLine} onPrint={(quote) => generateQuoteDocumentFromLines(quote, profile)} onSelect={setSelectedQuoteId} onSubmit={createQuoteDocument} selectedQuoteId={selectedQuoteId} rows={quoteDocuments} /> : null}
-        {page === "invoices" ? <InvoicesPage articles={articles} clients={clients} creditNotes={creditNotes} form={invoiceDocumentForm} lineForm={invoiceLineForm} onChange={setInvoiceDocumentForm} onCreditNote={createCreditNote} onDelete={deleteInvoiceDocument} onDeleteLine={deleteInvoiceLine} onLineChange={setInvoiceLineForm} onLineSubmit={addInvoiceLine} onPrint={(invoice) => generateInvoiceDocumentFromLines(invoice, profile)} onPrintCreditNote={(creditNote) => generateCreditNoteDocument(creditNote, profile)} onSelect={setSelectedInvoiceId} onStatusChange={updateInvoiceStatus} onSubmit={createInvoiceDocument} selectedInvoiceId={selectedInvoiceId} rows={invoiceDocuments} /> : null}
-        {page === "purchases" ? <InvoicePage editingId={editingPurchaseId} filename={periodFilename("factures-achats")} onCancel={() => { setPurchaseForm(emptyInvoice); setPurchaseLineDrafts([{ ...emptyPurchaseLineDraft }]); setEditingPurchaseId(null); setPurchasePdfProof(null); }} onDelete={(id) => remove("purchases", id)} onEdit={(row) => editInvoice(row, "purchase")} onPdfImport={importPurchasePdf} pdfProof={purchasePdfProof} form={purchaseForm} onChange={setPurchaseForm} onSubmit={submitPurchase} parties={suppliers} partyLabel="Fournisseur" purchaseLines={purchaseLineDrafts} onPurchaseLinesChange={setPurchaseLineDrafts} rows={purchases} title="Factures d'achats" /> : null}
+        {page === "invoices" ? <InvoicesPage articles={articles} clients={clients} creditNotes={creditNotes} form={invoiceDocumentForm} lineForm={invoiceLineForm} onChange={setInvoiceDocumentForm} onCreditNote={createCreditNote} onDelete={deleteInvoiceDocument} onDeleteLine={deleteInvoiceLine} onDiscountChange={updateInvoiceGlobalDiscount} onLineChange={setInvoiceLineForm} onLineSubmit={addInvoiceLine} onPrint={(invoice) => generateInvoiceDocumentFromLines(invoice, profile)} onPrintCreditNote={(creditNote) => generateCreditNoteDocument(creditNote, profile)} onSelect={selectInvoiceDocument} onStatusChange={updateInvoiceStatus} onSubmit={createInvoiceDocument} selectedInvoiceId={selectedInvoiceId} rows={invoiceDocuments} /> : null}
+        {page === "purchases" ? <InvoicePage editingId={editingPurchaseId} filename={periodFilename("factures-fournisseurs")} onCancel={() => { setPurchaseForm(emptyPurchaseInvoice); setPurchaseLineDrafts([{ ...emptyPurchaseLineDraft }]); setEditingPurchaseId(null); setPurchasePdfProof(null); }} onDelete={(id) => remove("purchases", id)} onEdit={(row) => editInvoice(row, "purchase")} onPdfImport={importPurchasePdf} pdfProof={purchasePdfProof} form={purchaseForm} onChange={setPurchaseForm} onSubmit={submitPurchase} parties={suppliers} partyLabel="Fournisseur" purchaseLines={purchaseLineDrafts} onPurchaseLinesChange={setPurchaseLineDrafts} rows={purchases} title="Factures fournisseurs" /> : null}
         {page === "bank" ? <BankPage editingId={editingBankTransactionId} filename={periodFilename("banque")} form={bankTransactionForm} invoices={invoiceDocuments} onCancel={() => { setBankTransactionForm(emptyBankTransaction); setEditingBankTransactionId(null); }} onChange={setBankTransactionForm} onDelete={(id) => remove("bank_transactions", id)} onEdit={editBankTransaction} onSubmit={submitBankTransaction} onToggleReconciled={toggleBankTransactionReconciled} purchases={purchases} rows={bankTransactions} totals={totals} /> : null}
         {page === "vat" ? <VatPage creditNotes={creditNotes} filename={periodFilename("tva")} invoices={invoiceDocuments} purchases={purchases} totals={totals} /> : null}
         {page === "monthly" ? <Monthly filename={periodFilename("recap-mensuel")} totals={totals} invoices={invoiceDocuments} purchases={purchases} /> : null}
@@ -2944,13 +3223,28 @@ function Header({ icon, subtitle, title }: { icon?: React.ReactNode; subtitle: s
 }
 
 function PeriodControls(props: {
+  customEndDate: string;
+  customStartDate: string;
+  filterMode: DateFilterMode;
   month: number;
+  onCustomEndDateChange: (value: string) => void;
+  onCustomStartDateChange: (value: string) => void;
+  onFilterModeChange: (value: DateFilterMode) => void;
   onMonthChange: (value: number) => void;
   onYearChange: (value: number) => void;
   year: number;
 }) {
   return (
     <div className="toolbar">
+      <select value={props.filterMode} onChange={(event) => props.onFilterModeChange(event.target.value as DateFilterMode)}>
+        <option value="today">Aujourd'hui</option>
+        <option value="week">Cette semaine</option>
+        <option value="month">Ce mois-ci</option>
+        <option value="lastMonth">Mois dernier</option>
+        <option value="year">Cette annee</option>
+        <option value="lastYear">Annee precedente</option>
+        <option value="custom">Periode personnalisee</option>
+      </select>
       <select value={props.month} onChange={(event) => props.onMonthChange(Number(event.target.value))}>
         {monthOptions.map((month) => (
           <option key={month.value} value={month.value}>
@@ -2966,11 +3260,32 @@ function PeriodControls(props: {
         value={props.year}
         onChange={(event) => props.onYearChange(Number(event.target.value))}
       />
+      {props.filterMode === "custom" ? (
+        <>
+          <input aria-label="Date de debut" type="date" value={props.customStartDate} onChange={(event) => props.onCustomStartDateChange(event.target.value)} />
+          <input aria-label="Date de fin" type="date" value={props.customEndDate} onChange={(event) => props.onCustomEndDateChange(event.target.value)} />
+        </>
+      ) : null}
     </div>
   );
 }
 
-function Dashboard({ month, totals, year }: { month: number; totals: Record<string, number>; year: number }) {
+function Dashboard({
+  annualSummary,
+  month,
+  totals,
+  year
+}: {
+  annualSummary: {
+    rows: Array<Record<string, number>>;
+    yearTotals: Record<string, number>;
+  };
+  month: number;
+  totals: Record<string, number>;
+  year: number;
+}) {
+  const [recapMode, setRecapMode] = useState<"monthly" | "yearly">("monthly");
+
   return (
     <>
       <Header title="Dashboard" subtitle={`Chiffres calcules depuis Supabase pour ${monthOptions[month - 1].label} ${year}.`} />
@@ -2980,6 +3295,64 @@ function Dashboard({ month, totals, year }: { month: number; totals: Record<stri
         <Metric label="TVA a declarer" value={formatEuro(totals.vatDue)} />
         <Metric label="Benefice estime" value={formatEuro(totals.profit)} />
       </div>
+      <section className="table-card">
+        <div className="purchase-lines-header">
+          <div>
+            <p className="eyebrow">Recapitulatif</p>
+            <h2>{recapMode === "monthly" ? "Mensuel" : "Annuel"}</h2>
+          </div>
+          <select value={recapMode} onChange={(event) => setRecapMode(event.target.value as "monthly" | "yearly")}>
+            <option value="monthly">Mensuel</option>
+            <option value="yearly">Annuel</option>
+          </select>
+        </div>
+        {recapMode === "monthly" ? (
+          <div className="summary-grid">
+            <Metric label="Chiffre d'affaires HT" value={formatEuro(totals.salesHt)} />
+            <Metric label="Chiffre d'affaires TTC" value={formatEuro(totals.salesTtc)} />
+            <Metric label="Achats HT" value={formatEuro(totals.purchasesHt)} />
+            <Metric label="Achats TTC" value={formatEuro(totals.purchasesTtc)} />
+            <Metric label="Benefice estime" value={formatEuro(totals.profit)} />
+            <Metric label="TVA collectee" value={formatEuro(totals.collectedVat)} />
+            <Metric label="TVA deductible" value={formatEuro(totals.deductibleVat)} />
+            <Metric label="TVA a declarer" value={formatEuro(totals.vatDue)} />
+            <Metric label="Nombre de factures" value={String(totals.invoiceCount ?? 0)} />
+            <Metric label="Factures fournisseurs" value={String(totals.purchaseCount ?? 0)} />
+          </div>
+        ) : (
+          <table>
+            <thead>
+              <tr><th>Mois</th><th>CA HT</th><th>CA TTC</th><th>Achats HT</th><th>Achats TTC</th><th>TVA collectee</th><th>TVA deductible</th><th>TVA a declarer</th><th>Benefice</th></tr>
+            </thead>
+            <tbody>
+              {annualSummary.rows.map((row) => (
+                <tr key={row.month}>
+                  <td>{monthOptions[Number(row.month) - 1].label}</td>
+                  <td>{formatEuro(row.salesHt)}</td>
+                  <td>{formatEuro(row.salesTtc)}</td>
+                  <td>{formatEuro(row.purchasesHt)}</td>
+                  <td>{formatEuro(row.purchasesTtc)}</td>
+                  <td>{formatEuro(row.collectedVat)}</td>
+                  <td>{formatEuro(row.deductibleVat)}</td>
+                  <td>{formatEuro(row.vatDue)}</td>
+                  <td>{formatEuro(row.profit)}</td>
+                </tr>
+              ))}
+              <tr>
+                <td><strong>Total {year}</strong></td>
+                <td><strong>{formatEuro(annualSummary.yearTotals.salesHt)}</strong></td>
+                <td><strong>{formatEuro(annualSummary.yearTotals.salesTtc)}</strong></td>
+                <td><strong>{formatEuro(annualSummary.yearTotals.purchasesHt)}</strong></td>
+                <td><strong>{formatEuro(annualSummary.yearTotals.purchasesTtc)}</strong></td>
+                <td><strong>{formatEuro(annualSummary.yearTotals.collectedVat)}</strong></td>
+                <td><strong>{formatEuro(annualSummary.yearTotals.deductibleVat)}</strong></td>
+                <td><strong>{formatEuro(annualSummary.yearTotals.vatDue)}</strong></td>
+                <td><strong>{formatEuro(annualSummary.yearTotals.profit)}</strong></td>
+              </tr>
+            </tbody>
+          </table>
+        )}
+      </section>
     </>
   );
 }
@@ -3239,6 +3612,7 @@ function InvoicesPage(props: {
   onChange: (value: typeof emptyInvoiceDocument) => void;
   onDelete: (id: string) => void;
   onDeleteLine: (line: InvoiceLine) => void;
+  onDiscountChange: (invoice: InvoiceDocument, discountType: DiscountType, discountValue: string) => void;
   onLineChange: (value: typeof emptyInvoiceLine) => void;
   onLineSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onPrint: (invoice: InvoiceDocument) => void;
@@ -3255,7 +3629,7 @@ function InvoicesPage(props: {
 
   return (
     <>
-      <Header title="Factures" subtitle="Creez une facture, ajoutez plusieurs lignes, puis genereez le PDF." />
+      <Header title="Factures client" subtitle="Creez une facture, ajoutez plusieurs lignes, puis genereez le PDF." />
       <form className="form-grid" onSubmit={props.onSubmit}>
         <select required value={props.form.clientId} onChange={(event) => props.onChange({ ...props.form, clientId: event.target.value })}>
           <option value="">Client</option>
@@ -3263,6 +3637,12 @@ function InvoicesPage(props: {
         </select>
         <input required type="date" value={props.form.invoiceDate} onChange={(event) => props.onChange({ ...props.form, invoiceDate: event.target.value })} />
         <input type="date" value={props.form.dueDate} onChange={(event) => props.onChange({ ...props.form, dueDate: event.target.value })} />
+        <select value={props.form.discountType} onChange={(event) => props.onChange({ ...props.form, discountType: event.target.value as DiscountType })}>
+          <option value="NONE">Sans remise globale</option>
+          <option value="PERCENT">Remise globale %</option>
+          <option value="AMOUNT">Remise globale EUR</option>
+        </select>
+        <input disabled={props.form.discountType === "NONE"} placeholder="Remise globale" step="0.01" type="number" value={props.form.discountValue} onChange={(event) => props.onChange({ ...props.form, discountValue: event.target.value })} />
         <input placeholder="Notes" value={props.form.notes} onChange={(event) => props.onChange({ ...props.form, notes: event.target.value })} />
         <button className="primary-button" type="submit">Créer facture</button>
       </form>
@@ -3298,6 +3678,25 @@ function InvoicesPage(props: {
         <>
           <Header title={`Lignes ${selectedInvoice.invoice_number}`} subtitle="Ajoutez les articles de la facture selectionnee." />
           {selectedInvoiceLocked ? <p className="error-message">Facture verrouillee : seules les factures en brouillon peuvent etre modifiees.</p> : null}
+          <form className="form-grid" onSubmit={(event) => {
+            event.preventDefault();
+            props.onDiscountChange(selectedInvoice, props.form.discountType, props.form.discountValue);
+          }}>
+            <select disabled={selectedInvoiceLocked} value={props.form.discountType} onChange={(event) => props.onChange({ ...props.form, discountType: event.target.value as DiscountType })}>
+              <option value="NONE">Sans remise globale</option>
+              <option value="PERCENT">Remise globale %</option>
+              <option value="AMOUNT">Remise globale EUR</option>
+            </select>
+            <input disabled={selectedInvoiceLocked || props.form.discountType === "NONE"} placeholder="Remise globale" step="0.01" type="number" value={props.form.discountValue} onChange={(event) => props.onChange({ ...props.form, discountValue: event.target.value })} />
+            <button className="primary-button" disabled={selectedInvoiceLocked} type="submit">Mettre a jour la remise</button>
+          </form>
+          <div className="purchase-lines-totals">
+            <span>HT avant remise <strong>{formatEuro(selectedInvoice.total_ht_before_discount ?? selectedInvoice.total_ht)}</strong></span>
+            <span>Remise <strong>{formatEuro(selectedInvoice.discount_amount ?? 0)}</strong></span>
+            <span>HT apres remise <strong>{formatEuro(selectedInvoice.total_ht)}</strong></span>
+            <span>TVA <strong>{formatEuro(selectedInvoice.total_vat)}</strong></span>
+            <span>TTC <strong>{formatEuro(selectedInvoice.total_ttc)}</strong></span>
+          </div>
           <form className="form-grid" onSubmit={props.onLineSubmit}>
             <select
               value={props.lineForm.articleId}
@@ -3781,11 +4180,13 @@ function InvoicePage(props: {
 }) {
   const isSalesPage = props.title === "Ventes";
   const purchaseTotals = summarizePurchaseLines(props.purchaseLines ?? []);
+  const editingRow = props.rows.find((row) => row.id === props.editingId);
+  const purchaseFormLocked = !isSalesPage && Boolean(editingRow && editingRow.status !== "DRAFT");
 
   function exportRows() {
     downloadCsv(
       props.filename,
-      ["Date", props.partyLabel, "Description", "HT", "Taux TVA", "Remise", "TVA", "TTC", "Statut"],
+      [!isSalesPage ? "Numero fournisseur" : "Date", ...(isSalesPage ? [props.partyLabel] : ["Date", props.partyLabel]), "Description", "HT", "Taux TVA", "Remise", "TVA", "TTC", "Statut"],
       props.rows.map((row) => {
         const party = "client" in row && row.client ? row.client : (row as Purchase).supplier;
         const discount =
@@ -3796,6 +4197,7 @@ function InvoicePage(props: {
               : "";
 
         return [
+          ...(!isSalesPage ? [row.supplier_invoice_number ?? ""] : []),
           row.invoice_date,
           party?.name,
           row.description,
@@ -3804,7 +4206,7 @@ function InvoicePage(props: {
           discount,
           row.vat_amount,
           row.amount_ttc,
-          row.status === "PAID" ? "Paye" : "Non paye"
+          row.status === "DRAFT" ? "Brouillon" : row.status === "PAID" ? "Paye" : "Non paye"
         ];
       })
     );
@@ -3866,8 +4268,9 @@ function InvoicePage(props: {
           ) : null}
         </div>
       ) : null}
+      {purchaseFormLocked ? <p className="error-message">Facture fournisseur verrouillee : seules les factures en brouillon peuvent etre modifiees.</p> : null}
       <form className="form-grid" noValidate onSubmit={props.onSubmit}>
-        <select required value={props.form.partyId} onChange={(e) => props.onChange({ ...props.form, partyId: e.target.value })}>
+        <select disabled={purchaseFormLocked} required value={props.form.partyId} onChange={(e) => props.onChange({ ...props.form, partyId: e.target.value })}>
           <option value="">{props.partyLabel}</option>
           {props.parties.map((party) => <option key={party.id} value={party.id}>{party.name}</option>)}
         </select>
@@ -3893,8 +4296,11 @@ function InvoicePage(props: {
             ))}
           </select>
         ) : null}
-        <input type="date" required value={props.form.date} onChange={(e) => props.onChange({ ...props.form, date: e.target.value })} />
-        <input placeholder="Description" required value={props.form.description} onChange={(e) => props.onChange({ ...props.form, description: e.target.value })} />
+        {!isSalesPage ? (
+          <input disabled={purchaseFormLocked} placeholder="Numero facture fournisseur" required value={props.form.supplierInvoiceNumber} onChange={(e) => props.onChange({ ...props.form, supplierInvoiceNumber: e.target.value })} />
+        ) : null}
+        <input disabled={purchaseFormLocked} type="date" required value={props.form.date} onChange={(e) => props.onChange({ ...props.form, date: e.target.value })} />
+        <input disabled={purchaseFormLocked} placeholder="Description" required value={props.form.description} onChange={(e) => props.onChange({ ...props.form, description: e.target.value })} />
         {isSalesPage ? (
           <>
             <input placeholder="Montant HT" required type="number" step="0.01" value={props.form.amountHt} onChange={(e) => props.onChange({ ...props.form, amountHt: e.target.value })} />
@@ -3923,11 +4329,12 @@ function InvoicePage(props: {
             />
           </>
         ) : null}
-        <select value={props.form.status} onChange={(e) => props.onChange({ ...props.form, status: e.target.value as Status })}>
+        <select disabled={purchaseFormLocked} value={props.form.status} onChange={(e) => props.onChange({ ...props.form, status: e.target.value as Status })}>
+          {!isSalesPage ? <option value="DRAFT">Brouillon</option> : null}
           <option value="UNPAID">Non paye</option>
           <option value="PAID">Paye</option>
         </select>
-        <button className="primary-button" type="submit">{props.editingId ? "Enregistrer" : "Ajouter"}</button>
+        <button className="primary-button" disabled={purchaseFormLocked} type="submit">{props.editingId ? "Enregistrer" : "Ajouter"}</button>
         {props.editingId ? <button className="link-button" onClick={props.onCancel} type="button">Annuler</button> : null}
       </form>
       {!isSalesPage ? (
@@ -3937,7 +4344,7 @@ function InvoicePage(props: {
               <p className="eyebrow">Lignes</p>
               <h2>Lignes de facture d'achat</h2>
             </div>
-            <button className="export-button" onClick={() => props.onPurchaseLinesChange?.([...(props.purchaseLines ?? []), { ...emptyPurchaseLineDraft }])} type="button">
+            <button className="export-button" disabled={purchaseFormLocked} onClick={() => props.onPurchaseLinesChange?.([...(props.purchaseLines ?? []), { ...emptyPurchaseLineDraft }])} type="button">
               Ajouter une ligne
             </button>
           </div>
@@ -3946,9 +4353,9 @@ function InvoicePage(props: {
               const amounts = calculateAmounts(line.amountHt, line.vatRate);
               return (
                 <div className="purchase-line-row" key={`${index}-${line.description}`}>
-                  <input placeholder="Description" value={line.description} onChange={(event) => props.onPurchaseLinesChange?.((props.purchaseLines ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item))} />
-                  <input placeholder="Montant HT" step="0.01" type="number" value={line.amountHt} onChange={(event) => props.onPurchaseLinesChange?.((props.purchaseLines ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, amountHt: event.target.value } : item))} />
-                  <select value={line.vatRate} onChange={(event) => props.onPurchaseLinesChange?.((props.purchaseLines ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, vatRate: event.target.value } : item))}>
+                  <input disabled={purchaseFormLocked} placeholder="Description (facultatif)" value={line.description} onChange={(event) => props.onPurchaseLinesChange?.((props.purchaseLines ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item))} />
+                  <input disabled={purchaseFormLocked} placeholder="Montant HT" step="0.01" type="number" value={line.amountHt} onChange={(event) => props.onPurchaseLinesChange?.((props.purchaseLines ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, amountHt: event.target.value } : item))} />
+                  <select disabled={purchaseFormLocked} value={line.vatRate} onChange={(event) => props.onPurchaseLinesChange?.((props.purchaseLines ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, vatRate: event.target.value } : item))}>
                     <option value="0">TVA 0 %</option>
                     <option value="5.5">TVA 5,5 %</option>
                     <option value="10">TVA 10 %</option>
@@ -3956,7 +4363,7 @@ function InvoicePage(props: {
                   </select>
                   <span>{formatEuro(amounts.vat_amount)}</span>
                   <span>{formatEuro(amounts.amount_ttc)}</span>
-                  <button className="danger-button" disabled={(props.purchaseLines ?? []).length === 1} onClick={() => props.onPurchaseLinesChange?.((props.purchaseLines ?? []).filter((_, itemIndex) => itemIndex !== index))} type="button">
+                  <button className="danger-button" disabled={purchaseFormLocked || (props.purchaseLines ?? []).length === 1} onClick={() => props.onPurchaseLinesChange?.((props.purchaseLines ?? []).filter((_, itemIndex) => itemIndex !== index))} type="button">
                     Supprimer
                   </button>
                 </div>
@@ -3972,7 +4379,7 @@ function InvoicePage(props: {
       ) : null}
       <div className="table-card">
         <table>
-          <thead><tr><th>Date</th><th>{props.partyLabel}</th><th>Description</th><th>HT</th><th>Remise</th><th>TVA</th><th>TTC</th><th>Statut</th><th>Actions</th></tr></thead>
+          <thead><tr>{!isSalesPage ? <th>Numero fournisseur</th> : null}<th>Date</th><th>{props.partyLabel}</th><th>Description</th><th>HT</th><th>Remise</th><th>TVA</th><th>TTC</th><th>Statut</th><th>Actions</th></tr></thead>
           <tbody>
             {props.rows.map((row) => {
               const party = "client" in row && row.client ? row.client : (row as Purchase).supplier;
@@ -3984,6 +4391,7 @@ function InvoicePage(props: {
                     : "-";
               return (
                 <tr key={row.id}>
+                  {!isSalesPage ? <td>{row.supplier_invoice_number ?? "-"}</td> : null}
                   <td>{new Date(row.invoice_date).toLocaleDateString("fr-FR")}</td>
                   <td>{party?.name ?? "-"}</td>
                   <td>{row.description}</td>
@@ -3991,7 +4399,7 @@ function InvoicePage(props: {
                   <td>{discount}</td>
                   <td>{formatEuro(row.vat_amount)}</td>
                   <td>{formatEuro(row.amount_ttc)}</td>
-                  <td><span className={row.status === "PAID" ? "badge" : "badge warning"}>{row.status === "PAID" ? "Paye" : "Non paye"}</span></td>
+                  <td><span className={row.status === "PAID" ? "badge" : "badge warning"}>{row.status === "DRAFT" ? "Brouillon" : row.status === "PAID" ? "Paye" : "Non paye"}</span></td>
                   <td>
                     <div className="row-actions">
                       {isSalesPage ? (
