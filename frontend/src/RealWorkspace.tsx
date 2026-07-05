@@ -264,13 +264,14 @@ const emptyInvoice = {
   vatRate: "20",
   discountType: "NONE" as DiscountType,
   discountValue: "",
+  supplierName: "",
   supplierInvoiceNumber: "",
   status: "UNPAID" as Status
 };
 
 const emptyPurchaseInvoice = {
   ...emptyInvoice,
-  status: "DRAFT" as Status
+  status: "UNPAID" as Status
 };
 
 const emptyPurchaseLineDraft = {
@@ -1455,6 +1456,7 @@ export function RealWorkspace({
   const [editingPurchaseId, setEditingPurchaseId] = useState<string | null>(null);
   const [editingBankTransactionId, setEditingBankTransactionId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [purchasePdfProof, setPurchasePdfProof] = useState<PdfReadProof | null>(null);
   const now = new Date();
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
@@ -1897,7 +1899,7 @@ export function RealWorkspace({
       } : {}),
       invoice_date: form.date,
       description: form.description,
-      status: form.status,
+      status: form.status === "DRAFT" ? "UNPAID" : form.status,
       ...amounts
     });
 
@@ -1938,6 +1940,10 @@ export function RealWorkspace({
   }
 
   function findDuplicatePurchaseInvoice(form: typeof emptyInvoice, currentPurchaseId?: string) {
+    if (!form.supplierInvoiceNumber.trim()) {
+      return undefined;
+    }
+
     const normalizedSupplierInvoiceNumber = normalizePurchaseDuplicateDescription(form.supplierInvoiceNumber);
 
     return purchases.find((purchase) =>
@@ -1945,6 +1951,37 @@ export function RealWorkspace({
       purchase.user_id === currentCompanyUserId &&
       normalizePurchaseDuplicateDescription(purchase.supplier_invoice_number ?? "") === normalizedSupplierInvoiceNumber
     );
+  }
+
+  function purchaseDescription(form: typeof emptyInvoice) {
+    const fallbackSupplier = suppliers.find((supplier) => supplier.id === form.partyId)?.name ?? form.supplierName.trim() ?? "";
+    return form.description.trim() || `Facture fournisseur ${form.supplierInvoiceNumber.trim() || fallbackSupplier || form.date}`;
+  }
+
+  async function ensurePurchaseSupplierId(form: typeof emptyInvoice) {
+    if (form.partyId) {
+      return form.partyId;
+    }
+
+    const supplierName = form.supplierName.trim() || `Fournisseur a completer ${new Date(form.date).toLocaleDateString("fr-FR")}`;
+    const existingSupplier = suppliers.find((supplier) => supplier.name.toLowerCase() === supplierName.toLowerCase());
+
+    if (existingSupplier) {
+      return existingSupplier.id;
+    }
+
+    const { data, error: insertError } = await supabase.from("suppliers").insert({
+      user_id: currentCompanyUserId,
+      name: supplierName
+    }).select("id").single();
+
+    if (insertError || !data) {
+      setError(displaySupabaseError(insertError?.message ?? "Impossible de creer le fournisseur."));
+      return null;
+    }
+
+    setNotice(`Fournisseur "${supplierName}" cree. N'oubliez pas de completer sa fiche dans le menu Fournisseurs.`);
+    return data.id as string;
   }
 
   async function createPurchaseInvoice(form: typeof emptyInvoice, lines: PurchaseLineDraft[]) {
@@ -1957,12 +1994,17 @@ export function RealWorkspace({
       return false;
     }
 
+    const supplierId = await ensurePurchaseSupplierId(form);
+
+    if (!supplierId) {
+      return false;
+    }
+
     const { data, error: insertError } = await supabase.from("purchases").insert({
       user_id: currentCompanyUserId,
-      party_id: form.partyId,
-      supplier_invoice_number: form.supplierInvoiceNumber.trim(),
+      party_id: supplierId,
       invoice_date: form.date,
-      description: form.description,
+      description: purchaseDescription({ ...form, partyId: supplierId }),
       status: form.status,
       vat_rate: primaryVatRate,
       ...totals
@@ -1992,8 +2034,8 @@ export function RealWorkspace({
   async function updatePurchaseInvoice(id: string, form: typeof emptyInvoice, lines: PurchaseLineDraft[]) {
     const currentPurchase = purchases.find((purchase) => purchase.id === id);
 
-    if (currentPurchase && currentPurchase.status !== "DRAFT") {
-      setError("Facture fournisseur verrouillee : seules les factures en brouillon peuvent etre modifiees.");
+    if (currentPurchase && currentPurchase.status === "PAID") {
+      setError("Facture fournisseur payee verrouillee : repassez-la en non payee avant correction si necessaire.");
       return false;
     }
 
@@ -2006,12 +2048,17 @@ export function RealWorkspace({
       return false;
     }
 
+    const supplierId = await ensurePurchaseSupplierId(form);
+
+    if (!supplierId) {
+      return false;
+    }
+
     const { error: updateError } = await supabase.from("purchases").update({
-      party_id: form.partyId,
-      supplier_invoice_number: form.supplierInvoiceNumber.trim(),
+      party_id: supplierId,
       invoice_date: form.date,
-      description: form.description,
-      status: form.status,
+      description: purchaseDescription({ ...form, partyId: supplierId }),
+      status: form.status === "DRAFT" ? "UNPAID" : form.status,
       vat_rate: primaryVatRate,
       ...totals
     }).eq("id", id);
@@ -2636,8 +2683,8 @@ export function RealWorkspace({
     if (table === "purchases") {
       const purchase = purchases.find((item) => item.id === id);
 
-      if (purchase && purchase.status !== "DRAFT") {
-        setError("Facture fournisseur verrouillee : seules les factures en brouillon peuvent etre supprimees.");
+      if (purchase && purchase.status === "PAID") {
+        setError("Facture fournisseur payee verrouillee : elle ne peut pas etre supprimee directement.");
         return;
       }
     }
@@ -2779,23 +2826,8 @@ export function RealWorkspace({
   function submitPurchase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!purchaseForm.partyId) {
-      setError("Selectionnez un fournisseur avant d'ajouter l'achat. Si le fournisseur n'existe pas encore, creez-le dans le menu Fournisseurs.");
-      return;
-    }
-
     if (!purchaseForm.date) {
       setError("Selectionnez une date avant d'ajouter l'achat.");
-      return;
-    }
-
-    if (!purchaseForm.description.trim()) {
-      setError("Renseignez une description avant d'ajouter l'achat.");
-      return;
-    }
-
-    if (!purchaseForm.supplierInvoiceNumber.trim()) {
-      setError("Renseignez le numero de facture fournisseur avant d'enregistrer.");
       return;
     }
 
@@ -2838,7 +2870,8 @@ export function RealWorkspace({
         discountType: "NONE",
         discountValue: "",
         partyId: parsed.partyId,
-        status: "DRAFT",
+        status: "UNPAID",
+        supplierName: parsed.partyId ? "" : parsed.proof.supplierName,
         supplierInvoiceNumber: "",
         vatRate: parsed.vatRate
       });
@@ -2904,6 +2937,7 @@ export function RealWorkspace({
       vatRate: String(row.vat_rate),
       discountType: row.discount_type ?? "NONE",
       discountValue: String(row.discount_value ?? ""),
+      supplierName: "",
       supplierInvoiceNumber: row.supplier_invoice_number ?? "",
       status: row.status
     };
@@ -3030,6 +3064,7 @@ export function RealWorkspace({
 
   function goToPage(nextPage: Page) {
     setError("");
+    setNotice("");
     setPage(nextPage);
     setMobileMoreOpen(false);
   }
@@ -3114,6 +3149,7 @@ export function RealWorkspace({
 
       <section className="dashboard-content">
         {error ? <p className="error-message">{error}</p> : null}
+        {notice ? <p className="success-message">{notice}</p> : null}
         <PeriodControls
           customEndDate={customEndDate}
           customStartDate={customStartDate}
@@ -4064,6 +4100,12 @@ function PartyPage(props: {
   title: string;
 }) {
   const [showImportHelp, setShowImportHelp] = useState(false);
+  const showCompleteness = props.title === "Fournisseurs";
+
+  function partyCompleteness(row: Party) {
+    const fields = [row.name, row.email, row.phone, row.address, row.siret, row.vat_number];
+    return Math.round((fields.filter((value) => String(value ?? "").trim()).length / fields.length) * 100);
+  }
 
   function exportRows() {
     downloadCsv(
@@ -4135,22 +4177,33 @@ function PartyPage(props: {
       </div>
       <div className="table-card">
         <table>
-          <thead><tr><th>Nom</th><th>Email</th><th>Telephone</th><th>SIRET</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Nom</th><th>Email</th><th>Telephone</th><th>SIRET</th>{showCompleteness ? <th>Fiche</th> : null}<th>Actions</th></tr></thead>
           <tbody>
-            {props.rows.map((row) => (
-              <tr key={row.id}>
-                <td>{row.name}</td>
-                <td>{row.email}</td>
-                <td>{row.phone}</td>
-                <td>{row.siret}</td>
-                <td>
-                  <div className="row-actions">
-                    <button className="link-button" onClick={() => props.onEdit(row)} type="button">Modifier</button>
-                    <button className="danger-button" onClick={() => props.onDelete(row.id)} type="button">Supprimer</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {props.rows.map((row) => {
+              const completeness = partyCompleteness(row);
+              return (
+                <tr key={row.id}>
+                  <td>{row.name}</td>
+                  <td>{row.email}</td>
+                  <td>{row.phone}</td>
+                  <td>{row.siret}</td>
+                  {showCompleteness ? (
+                    <td>
+                      <div className="completion-cell">
+                        <progress max="100" value={completeness} />
+                        <span>{completeness} %</span>
+                      </div>
+                    </td>
+                  ) : null}
+                  <td>
+                    <div className="row-actions">
+                      <button className="link-button" onClick={() => props.onEdit(row)} type="button">Modifier</button>
+                      <button className="danger-button" onClick={() => props.onDelete(row.id)} type="button">Supprimer</button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -4181,7 +4234,7 @@ function InvoicePage(props: {
   const isSalesPage = props.title === "Ventes";
   const purchaseTotals = summarizePurchaseLines(props.purchaseLines ?? []);
   const editingRow = props.rows.find((row) => row.id === props.editingId);
-  const purchaseFormLocked = !isSalesPage && Boolean(editingRow && editingRow.status !== "DRAFT");
+  const purchaseFormLocked = !isSalesPage && Boolean(editingRow && editingRow.status === "PAID");
 
   function exportRows() {
     downloadCsv(
@@ -4268,12 +4321,15 @@ function InvoicePage(props: {
           ) : null}
         </div>
       ) : null}
-      {purchaseFormLocked ? <p className="error-message">Facture fournisseur verrouillee : seules les factures en brouillon peuvent etre modifiees.</p> : null}
-      <form className="form-grid" noValidate onSubmit={props.onSubmit}>
-        <select disabled={purchaseFormLocked} required value={props.form.partyId} onChange={(e) => props.onChange({ ...props.form, partyId: e.target.value })}>
+      {purchaseFormLocked ? <p className="error-message">Facture fournisseur payee verrouillee : elle ne peut pas etre modifiee directement.</p> : null}
+      <form className="form-grid" id={!isSalesPage ? "purchase-invoice-form" : undefined} noValidate onSubmit={props.onSubmit}>
+        <select disabled={purchaseFormLocked} required={isSalesPage} value={props.form.partyId} onChange={(e) => props.onChange({ ...props.form, partyId: e.target.value, supplierName: "" })}>
           <option value="">{props.partyLabel}</option>
           {props.parties.map((party) => <option key={party.id} value={party.id}>{party.name}</option>)}
         </select>
+        {!isSalesPage ? (
+          <input disabled={purchaseFormLocked || Boolean(props.form.partyId)} placeholder="Nouveau fournisseur (facultatif)" value={props.form.supplierName} onChange={(e) => props.onChange({ ...props.form, supplierName: e.target.value })} />
+        ) : null}
         {isSalesPage ? (
           <select
             value={props.form.articleId}
@@ -4297,10 +4353,10 @@ function InvoicePage(props: {
           </select>
         ) : null}
         {!isSalesPage ? (
-          <input disabled={purchaseFormLocked} placeholder="Numero facture fournisseur" required value={props.form.supplierInvoiceNumber} onChange={(e) => props.onChange({ ...props.form, supplierInvoiceNumber: e.target.value })} />
+          <input disabled={purchaseFormLocked} placeholder="Numero facture fournisseur (facultatif)" value={props.form.supplierInvoiceNumber} onChange={(e) => props.onChange({ ...props.form, supplierInvoiceNumber: e.target.value })} />
         ) : null}
         <input disabled={purchaseFormLocked} type="date" required value={props.form.date} onChange={(e) => props.onChange({ ...props.form, date: e.target.value })} />
-        <input disabled={purchaseFormLocked} placeholder="Description" required value={props.form.description} onChange={(e) => props.onChange({ ...props.form, description: e.target.value })} />
+        <input disabled={purchaseFormLocked} placeholder={isSalesPage ? "Description" : "Description globale (facultatif)"} required={isSalesPage} value={props.form.description} onChange={(e) => props.onChange({ ...props.form, description: e.target.value })} />
         {isSalesPage ? (
           <>
             <input placeholder="Montant HT" required type="number" step="0.01" value={props.form.amountHt} onChange={(e) => props.onChange({ ...props.form, amountHt: e.target.value })} />
@@ -4330,11 +4386,10 @@ function InvoicePage(props: {
           </>
         ) : null}
         <select disabled={purchaseFormLocked} value={props.form.status} onChange={(e) => props.onChange({ ...props.form, status: e.target.value as Status })}>
-          {!isSalesPage ? <option value="DRAFT">Brouillon</option> : null}
           <option value="UNPAID">Non paye</option>
           <option value="PAID">Paye</option>
         </select>
-        <button className="primary-button" disabled={purchaseFormLocked} type="submit">{props.editingId ? "Enregistrer" : "Ajouter"}</button>
+        {isSalesPage ? <button className="primary-button" type="submit">{props.editingId ? "Enregistrer" : "Ajouter"}</button> : null}
         {props.editingId ? <button className="link-button" onClick={props.onCancel} type="button">Annuler</button> : null}
       </form>
       {!isSalesPage ? (
@@ -4375,6 +4430,9 @@ function InvoicePage(props: {
             <span>Total TVA <strong>{formatEuro(purchaseTotals.vat_amount)}</strong></span>
             <span>Total TTC <strong>{formatEuro(purchaseTotals.amount_ttc)}</strong></span>
           </div>
+          <button className="primary-button" disabled={purchaseFormLocked} form="purchase-invoice-form" type="submit">
+            {props.editingId ? "Enregistrer la facture" : "Creer la facture"}
+          </button>
         </section>
       ) : null}
       <div className="table-card">

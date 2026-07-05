@@ -229,6 +229,33 @@ button:disabled {
   padding: 12px;
 }
 
+.success-message {
+  background: #ecfdf3;
+  border: 1px solid #abefc6;
+  border-radius: 8px;
+  color: #027a48;
+  padding: 12px;
+}
+
+.completion-cell {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 130px;
+}
+
+.completion-cell progress {
+  accent-color: #21725e;
+  height: 8px;
+  width: 78px;
+}
+
+.completion-cell span {
+  color: #475467;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .dashboard-shell {
   align-items: stretch;
   gap: 24px;
