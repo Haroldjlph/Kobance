@@ -297,6 +297,7 @@ const emptyBankTransaction = {
 
 const emptyInvoiceDocument = {
   clientId: "",
+  clientName: "",
   invoiceDate: new Date().toISOString().slice(0, 10),
   dueDate: "",
   discountType: "NONE" as DiscountType,
@@ -2453,6 +2454,11 @@ export function RealWorkspace({
   async function createInvoiceDocument(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     let invoiceNumber = "";
+    const clientId = await ensureInvoiceClientId();
+
+    if (!clientId) {
+      return;
+    }
 
     try {
       invoiceNumber = await nextDocumentNumber("FAC", currentCompanyUserId);
@@ -2463,7 +2469,7 @@ export function RealWorkspace({
 
     const { data, error: insertError } = await supabase.from("invoices").insert({
       user_id: currentCompanyUserId,
-      client_id: invoiceDocumentForm.clientId,
+      client_id: clientId,
       invoice_number: invoiceNumber,
       invoice_date: invoiceDocumentForm.invoiceDate,
       due_date: invoiceDocumentForm.dueDate || null,
@@ -2482,6 +2488,38 @@ export function RealWorkspace({
     setSelectedInvoiceId(data.id);
     setInvoiceDocumentForm(emptyInvoiceDocument);
     await loadData();
+  }
+
+  async function ensureInvoiceClientId() {
+    if (invoiceDocumentForm.clientId) {
+      return invoiceDocumentForm.clientId;
+    }
+
+    const clientName = invoiceDocumentForm.clientName.trim();
+
+    if (!clientName) {
+      setError("Selectionnez un client existant ou renseignez un nouveau client.");
+      return null;
+    }
+
+    const existingClient = clients.find((client) => client.name.toLowerCase() === clientName.toLowerCase());
+
+    if (existingClient) {
+      return existingClient.id;
+    }
+
+    const { data, error: insertError } = await supabase.from("clients").insert({
+      user_id: currentCompanyUserId,
+      name: clientName
+    }).select("id").single();
+
+    if (insertError || !data) {
+      setError(displaySupabaseError(insertError?.message ?? "Impossible de creer le client."));
+      return null;
+    }
+
+    setNotice(`Client "${clientName}" cree. N'oubliez pas de completer sa fiche dans le menu Clients.`);
+    return data.id as string;
   }
 
   async function updateInvoiceGlobalDiscount(invoice: InvoiceDocument, discountType: DiscountType, discountValue: string) {
@@ -3097,6 +3135,7 @@ export function RealWorkspace({
     if (invoice) {
       setInvoiceDocumentForm({
         clientId: invoice.client_id,
+        clientName: "",
         invoiceDate: invoice.invoice_date,
         dueDate: invoice.due_date ?? "",
         discountType: invoice.discount_type ?? "NONE",
@@ -3108,7 +3147,7 @@ export function RealWorkspace({
 
   const primaryMobilePages: Array<{ page: Page; icon: React.ReactNode; label: string }> = [
     { page: "dashboard", icon: <BarChart3 size={20} />, label: "Accueil" },
-    { page: "invoices", icon: <ReceiptText size={20} />, label: "Factures client" },
+    { page: "invoices", icon: <ReceiptText size={20} />, label: "Fact. Client" },
     { page: "purchases", icon: <ShoppingCart size={20} />, label: "Fact. fourn." },
     { page: "bank", icon: <CreditCard size={20} />, label: "Banque" }
   ];
@@ -3155,7 +3194,7 @@ export function RealWorkspace({
             <Nav active={page === "clients"} icon={<Users size={18} />} label="Clients" onClick={() => goToPage("clients")} />
             <Nav active={page === "suppliers"} icon={<Building2 size={18} />} label="Fournisseurs" onClick={() => goToPage("suppliers")} />
             <Nav active={page === "quotes"} icon={<FileText size={18} />} label="Devis" onClick={() => goToPage("quotes")} />
-            <Nav active={page === "invoices"} icon={<ReceiptText size={18} />} label="Factures client" onClick={() => goToPage("invoices")} />
+            <Nav active={page === "invoices"} icon={<ReceiptText size={18} />} label="Fact. Client" onClick={() => goToPage("invoices")} />
             <Nav active={page === "purchases"} icon={<ShoppingCart size={18} />} label="Fact. fourn." onClick={() => goToPage("purchases")} />
             <Nav active={page === "bank"} icon={<CreditCard size={18} />} label="Banque" onClick={() => goToPage("bank")} />
             <Nav active={page === "vat"} icon={<Scale size={18} />} label="TVA" onClick={() => goToPage("vat")} />
@@ -3688,10 +3727,11 @@ function InvoicesPage(props: {
     <>
       <Header title="Factures client" subtitle="Creez une facture, ajoutez plusieurs lignes, puis genereez le PDF." />
       <form className="form-grid" onSubmit={props.onSubmit}>
-        <select required value={props.form.clientId} onChange={(event) => props.onChange({ ...props.form, clientId: event.target.value })}>
+        <select value={props.form.clientId} onChange={(event) => props.onChange({ ...props.form, clientId: event.target.value, clientName: "" })}>
           <option value="">Client</option>
           {props.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
         </select>
+        <input disabled={Boolean(props.form.clientId)} placeholder="Nouveau client" value={props.form.clientName} onChange={(event) => props.onChange({ ...props.form, clientName: event.target.value })} />
         <input required type="date" value={props.form.invoiceDate} onChange={(event) => props.onChange({ ...props.form, invoiceDate: event.target.value })} />
         <input type="date" value={props.form.dueDate} onChange={(event) => props.onChange({ ...props.form, dueDate: event.target.value })} />
         <select value={props.form.discountType} onChange={(event) => props.onChange({ ...props.form, discountType: event.target.value as DiscountType })}>
@@ -4121,7 +4161,7 @@ function PartyPage(props: {
   title: string;
 }) {
   const [showImportHelp, setShowImportHelp] = useState(false);
-  const showCompleteness = props.title === "Fournisseurs";
+  const showCompleteness = props.title === "Clients" || props.title === "Fournisseurs";
 
   function partyCompleteness(row: Party) {
     const fields = [row.name, row.email, row.phone, row.address, row.siret, row.vat_number];
@@ -4298,50 +4338,6 @@ function InvoicePage(props: {
           </button>
         }
       />
-      {!isSalesPage ? (
-        <div className="import-panel">
-          <div>
-            <p className="eyebrow">Lecture PDF</p>
-            <h2>Importer une facture fournisseur</h2>
-            <p>
-              Selectionnez une facture PDF avec texte lisible. Kobance pre-remplit le fournisseur, la date, le HT et la TVA quand ces informations sont detectees.
-            </p>
-          </div>
-          <div className="import-actions">
-            <label className="file-button">
-              <Download size={18} />
-              Lire un PDF
-              <input accept="application/pdf,.pdf" type="file" onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file && props.onPdfImport) {
-                  void props.onPdfImport(file);
-                  event.target.value = "";
-                }
-              }} />
-            </label>
-          </div>
-          {props.pdfProof ? (
-            <div className="pdf-proof">
-              <div className="pdf-proof-header">
-                <strong>Preuve de lecture PDF</strong>
-                <span>{props.pdfProof.fileName} - {props.pdfProof.pages} page{props.pdfProof.pages > 1 ? "s" : ""}</span>
-              </div>
-              <div className="pdf-proof-grid">
-                <span>Fournisseur : <strong>{props.pdfProof.supplierName}</strong></span>
-                <span>Date : <strong>{props.pdfProof.date}</strong></span>
-                <span>HT retenu : <strong>{props.pdfProof.amountHt} EUR</strong></span>
-                <span>TTC detecte : <strong>{props.pdfProof.totalTtc} EUR</strong></span>
-                <span>TVA : <strong>{props.pdfProof.vatRate} %</strong></span>
-                <span>Montants lus : <strong>{props.pdfProof.amounts.length ? props.pdfProof.amounts.map((amount) => formatAmountInput(amount)).join(" / ") : "Aucun"}</strong></span>
-              </div>
-              <details>
-                <summary>Voir le texte lu dans le PDF</summary>
-                <p>{props.pdfProof.textPreview || "Aucun texte lisible detecte. Le PDF est probablement un scan."}</p>
-              </details>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
       {purchaseFormLocked ? <p className="error-message">Facture fournisseur payee verrouillee : elle ne peut pas etre modifiee directement.</p> : null}
       <form className="form-grid" id={!isSalesPage ? "purchase-invoice-form" : undefined} noValidate onSubmit={props.onSubmit}>
         <select disabled={purchaseFormLocked} required={isSalesPage} value={props.form.partyId} onChange={(e) => props.onChange({ ...props.form, partyId: e.target.value, supplierName: "" })}>
