@@ -322,6 +322,8 @@ const emptyInvoiceLine = {
   vatRate: "20"
 };
 
+type InvoiceLineDraft = typeof emptyInvoiceLine;
+
 const supportWhatsappNumber = (import.meta.env.VITE_SUPPORT_WHATSAPP_NUMBER ?? "").replace(/\D/g, "");
 const supportWhatsappMessage = import.meta.env.VITE_SUPPORT_WHATSAPP_MESSAGE ?? "Bonjour, j'ai besoin d'aide sur Kobance.";
 
@@ -398,6 +400,20 @@ function calculateLineAmounts(quantity: string, unitPriceHt: string, vatRate: st
   const baseHt = parseDecimalInput(quantity || "0") * parseDecimalInput(unitPriceHt || "0");
 
   return calculateSaleAmounts(String(baseHt), vatRate, discountType, discountValue);
+}
+
+function summarizeInvoiceLineDrafts(lines: InvoiceLineDraft[], discountType: DiscountType = "NONE", discountValue = "") {
+  const lineAmounts = lines.map((line) => {
+    const amounts = calculateLineAmounts(line.quantity, line.unitPriceHt, line.vatRate, line.discountType, line.discountValue);
+
+    return {
+      line_ht: amounts.amount_ht,
+      line_vat: amounts.vat_amount,
+      line_ttc: amounts.amount_ttc
+    };
+  });
+
+  return calculateInvoiceTotalsWithGlobalDiscount(lineAmounts, discountType, parseDecimalInput(discountValue || "0"));
 }
 
 function calculateGlobalDiscount(totalHt: number, discountType: DiscountType = "NONE", discountValue = 0) {
@@ -1444,6 +1460,7 @@ export function RealWorkspace({
   const [quoteLineForm, setQuoteLineForm] = useState(emptyInvoiceLine);
   const [selectedQuoteId, setSelectedQuoteId] = useState<string | null>(null);
   const [invoiceDocumentForm, setInvoiceDocumentForm] = useState(emptyInvoiceDocument);
+  const [invoiceDraftLines, setInvoiceDraftLines] = useState<InvoiceLineDraft[]>([{ ...emptyInvoiceLine }]);
   const [invoiceLineForm, setInvoiceLineForm] = useState(emptyInvoiceLine);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [saleForm, setSaleForm] = useState(emptyInvoice);
@@ -2454,11 +2471,24 @@ export function RealWorkspace({
   async function createInvoiceDocument(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     let invoiceNumber = "";
+    const validLines = invoiceDraftLines.filter((line) =>
+      line.description.trim() &&
+      isPositiveInteger(line.quantity) &&
+      parseDecimalInput(line.unitPriceHt) > 0
+    );
+
+    if (validLines.length === 0 || validLines.length !== invoiceDraftLines.length) {
+      setError("Chaque ligne de facture client doit avoir une description, une quantite entiere et un prix HT superieur a 0.");
+      return;
+    }
+
     const clientId = await ensureInvoiceClientId();
 
     if (!clientId) {
       return;
     }
+
+    const totals = summarizeInvoiceLineDrafts(invoiceDraftLines, invoiceDocumentForm.discountType, invoiceDocumentForm.discountValue);
 
     try {
       invoiceNumber = await nextDocumentNumber("FAC", currentCompanyUserId);
@@ -2475,8 +2505,7 @@ export function RealWorkspace({
       due_date: invoiceDocumentForm.dueDate || null,
       discount_type: invoiceDocumentForm.discountType,
       discount_value: Number(invoiceDocumentForm.discountValue || 0),
-      discount_amount: 0,
-      total_ht_before_discount: 0,
+      ...totals,
       notes: invoiceDocumentForm.notes || null
     }).select("id").single();
 
@@ -2485,8 +2514,34 @@ export function RealWorkspace({
       return;
     }
 
+    const lines = invoiceDraftLines.map((line) => {
+      const amounts = calculateLineAmounts(line.quantity, line.unitPriceHt, line.vatRate, line.discountType, line.discountValue);
+
+      return {
+        invoice_id: data.id,
+        user_id: currentCompanyUserId,
+        article_id: line.articleId || null,
+        description: line.description.trim(),
+        quantity: Number(line.quantity),
+        unit_price_ht: Number(line.unitPriceHt),
+        discount_type: line.discountType,
+        discount_value: Number(line.discountValue || 0),
+        vat_rate: Number(line.vatRate),
+        line_ht: amounts.amount_ht,
+        line_vat: amounts.vat_amount,
+        line_ttc: amounts.amount_ttc
+      };
+    });
+    const { error: linesError } = await supabase.from("invoice_lines").insert(lines);
+
+    if (linesError) {
+      setError(displaySupabaseError(linesError.message));
+      return;
+    }
+
     setSelectedInvoiceId(data.id);
     setInvoiceDocumentForm(emptyInvoiceDocument);
+    setInvoiceDraftLines([{ ...emptyInvoiceLine }]);
     await loadData();
   }
 
@@ -3228,7 +3283,7 @@ export function RealWorkspace({
         {page === "clients" ? <PartyPage editingId={editingClientId} form={clientForm} onCancel={() => { setClientForm(emptyParty); setEditingClientId(null); }} onChange={setClientForm} onEdit={(row) => editParty(row, "client")} onImport={(file) => importParties("clients", file)} onSubmit={submitClient} rows={clients} title="Clients" onDelete={(id) => remove("clients", id)} /> : null}
         {page === "suppliers" ? <PartyPage editingId={editingSupplierId} form={supplierForm} onCancel={() => { setSupplierForm(emptyParty); setEditingSupplierId(null); }} onChange={setSupplierForm} onEdit={(row) => editParty(row, "supplier")} onImport={(file) => importParties("suppliers", file)} onSubmit={submitSupplier} rows={suppliers} title="Fournisseurs" onDelete={(id) => remove("suppliers", id)} /> : null}
         {page === "quotes" ? <QuotesPage articles={articles} clients={clients} form={quoteDocumentForm} lineForm={quoteLineForm} onChange={setQuoteDocumentForm} onConvert={convertQuoteToInvoice} onDelete={deleteQuoteDocument} onDeleteLine={deleteQuoteLine} onLineChange={setQuoteLineForm} onLineSubmit={addQuoteLine} onPrint={(quote) => generateQuoteDocumentFromLines(quote, profile)} onSelect={setSelectedQuoteId} onSubmit={createQuoteDocument} selectedQuoteId={selectedQuoteId} rows={quoteDocuments} /> : null}
-        {page === "invoices" ? <InvoicesPage articles={articles} clients={clients} creditNotes={creditNotes} form={invoiceDocumentForm} lineForm={invoiceLineForm} onChange={setInvoiceDocumentForm} onCreditNote={createCreditNote} onDelete={deleteInvoiceDocument} onDeleteLine={deleteInvoiceLine} onDiscountChange={updateInvoiceGlobalDiscount} onLineChange={setInvoiceLineForm} onLineSubmit={addInvoiceLine} onPrint={(invoice) => generateInvoiceDocumentFromLines(invoice, profile)} onPrintCreditNote={(creditNote) => generateCreditNoteDocument(creditNote, profile)} onSelect={selectInvoiceDocument} onStatusChange={updateInvoiceStatus} onSubmit={createInvoiceDocument} selectedInvoiceId={selectedInvoiceId} rows={invoiceDocuments} /> : null}
+        {page === "invoices" ? <InvoicesPage articles={articles} clients={clients} creditNotes={creditNotes} draftLines={invoiceDraftLines} form={invoiceDocumentForm} lineForm={invoiceLineForm} onChange={setInvoiceDocumentForm} onCreditNote={createCreditNote} onDelete={deleteInvoiceDocument} onDeleteLine={deleteInvoiceLine} onDiscountChange={updateInvoiceGlobalDiscount} onDraftLinesChange={setInvoiceDraftLines} onLineChange={setInvoiceLineForm} onLineSubmit={addInvoiceLine} onPrint={(invoice) => generateInvoiceDocumentFromLines(invoice, profile)} onPrintCreditNote={(creditNote) => generateCreditNoteDocument(creditNote, profile)} onSelect={selectInvoiceDocument} onStatusChange={updateInvoiceStatus} onSubmit={createInvoiceDocument} selectedInvoiceId={selectedInvoiceId} rows={invoiceDocuments} /> : null}
         {page === "purchases" ? <InvoicePage editingId={editingPurchaseId} filename={periodFilename("factures-fournisseurs")} onCancel={() => { setPurchaseForm(emptyPurchaseInvoice); setPurchaseLineDrafts([{ ...emptyPurchaseLineDraft }]); setEditingPurchaseId(null); setPurchasePdfProof(null); }} onDelete={(id) => remove("purchases", id)} onEdit={(row) => editInvoice(row, "purchase")} onPdfImport={importPurchasePdf} pdfProof={purchasePdfProof} form={purchaseForm} onChange={setPurchaseForm} onSubmit={submitPurchase} parties={suppliers} partyLabel="Fournisseur" purchaseLines={purchaseLineDrafts} onPurchaseLinesChange={setPurchaseLineDrafts} rows={purchases} title="Factures fournisseurs" /> : null}
         {page === "bank" ? <BankPage editingId={editingBankTransactionId} filename={periodFilename("banque")} form={bankTransactionForm} invoices={invoiceDocuments} onCancel={() => { setBankTransactionForm(emptyBankTransaction); setEditingBankTransactionId(null); }} onChange={setBankTransactionForm} onDelete={(id) => remove("bank_transactions", id)} onEdit={editBankTransaction} onSubmit={submitBankTransaction} onToggleReconciled={toggleBankTransactionReconciled} purchases={purchases} rows={bankTransactions} totals={totals} /> : null}
         {page === "vat" ? <VatPage creditNotes={creditNotes} filename={periodFilename("tva")} invoices={invoiceDocuments} purchases={purchases} totals={totals} /> : null}
@@ -3481,7 +3536,7 @@ function CompanyPage(props: {
         title="Entreprise"
         subtitle={props.profile ? "Informations utilisees pour vos suivis comptables." : "Completez la fiche de votre entreprise."}
       />
-      <form className="form-grid" onSubmit={props.onSubmit}>
+      <form className="form-grid" id="customer-invoice-form" onSubmit={props.onSubmit}>
         <input
           pattern="[A-Za-zÀ-ÖØ-öø-ÿ' -]+"
           placeholder="Raison sociale"
@@ -3703,6 +3758,7 @@ function InvoicesPage(props: {
   articles: Article[];
   clients: Party[];
   creditNotes: CreditNote[];
+  draftLines: InvoiceLineDraft[];
   form: typeof emptyInvoiceDocument;
   lineForm: typeof emptyInvoiceLine;
   onChange: (value: typeof emptyInvoiceDocument) => void;
@@ -3714,6 +3770,7 @@ function InvoicesPage(props: {
   onPrint: (invoice: InvoiceDocument) => void;
   onPrintCreditNote: (creditNote: CreditNote) => void;
   onCreditNote: (invoice: InvoiceDocument) => void;
+  onDraftLinesChange: (value: InvoiceLineDraft[]) => void;
   onSelect: (id: string) => void;
   onStatusChange: (invoice: InvoiceDocument, status: DocumentStatus) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -3722,6 +3779,7 @@ function InvoicesPage(props: {
 }) {
   const selectedInvoice = props.rows.find((invoice) => invoice.id === props.selectedInvoiceId) ?? null;
   const selectedInvoiceLocked = selectedInvoice ? selectedInvoice.status !== "DRAFT" : false;
+  const draftTotals = summarizeInvoiceLineDrafts(props.draftLines, props.form.discountType, props.form.discountValue);
 
   return (
     <>
@@ -3741,8 +3799,66 @@ function InvoicesPage(props: {
         </select>
         <input disabled={props.form.discountType === "NONE"} placeholder="Remise globale" step="0.01" type="number" value={props.form.discountValue} onChange={(event) => props.onChange({ ...props.form, discountValue: event.target.value })} />
         <input placeholder="Notes" value={props.form.notes} onChange={(event) => props.onChange({ ...props.form, notes: event.target.value })} />
-        <button className="primary-button" type="submit">Créer facture</button>
       </form>
+      <section className="purchase-lines-panel">
+        <div className="purchase-lines-header">
+          <div>
+            <p className="eyebrow">Lignes</p>
+            <h2>Lignes de facture client</h2>
+          </div>
+          <button className="export-button" onClick={() => props.onDraftLinesChange([...props.draftLines, { ...emptyInvoiceLine }])} type="button">
+            Ajouter une ligne
+          </button>
+        </div>
+        <div className="purchase-line-list">
+          {props.draftLines.map((line, index) => {
+            const amounts = calculateLineAmounts(line.quantity, line.unitPriceHt, line.vatRate, line.discountType, line.discountValue);
+            return (
+              <div className="purchase-line-row" key={`${index}-${line.description}`}>
+                <select
+                  value={line.articleId}
+                  onChange={(event) => {
+                    const article = props.articles.find((item) => item.id === event.target.value);
+                    props.onDraftLinesChange(props.draftLines.map((item, itemIndex) => itemIndex === index ? {
+                      ...item,
+                      articleId: event.target.value,
+                      description: article?.description || article?.name || item.description,
+                      unitPriceHt: article ? String(article.unit_price_ht) : item.unitPriceHt,
+                      vatRate: article ? String(article.vat_rate) : item.vatRate
+                    } : item));
+                  }}
+                >
+                  <option value="">Article libre</option>
+                  {props.articles.map((article) => (
+                    <option key={article.id} value={article.id}>{article.reference ? `${article.reference} - ` : ""}{article.name}</option>
+                  ))}
+                </select>
+                <input placeholder="Description" value={line.description} onChange={(event) => props.onDraftLinesChange(props.draftLines.map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item))} />
+                <input inputMode="numeric" min="1" pattern="[1-9][0-9]*" placeholder="Qte" step="1" type="number" value={line.quantity} onChange={(event) => props.onDraftLinesChange(props.draftLines.map((item, itemIndex) => itemIndex === index ? { ...item, quantity: event.target.value } : item))} />
+                <input min="0" placeholder="PU HT" step="0.01" type="number" value={line.unitPriceHt} onChange={(event) => props.onDraftLinesChange(props.draftLines.map((item, itemIndex) => itemIndex === index ? { ...item, unitPriceHt: event.target.value } : item))} />
+                <select value={line.vatRate} onChange={(event) => props.onDraftLinesChange(props.draftLines.map((item, itemIndex) => itemIndex === index ? { ...item, vatRate: event.target.value } : item))}>
+                  <option value="0">TVA 0 %</option>
+                  <option value="5.5">TVA 5,5 %</option>
+                  <option value="10">TVA 10 %</option>
+                  <option value="20">TVA 20 %</option>
+                </select>
+                <span>{formatEuro(amounts.amount_ttc)}</span>
+                <button className="danger-button" disabled={props.draftLines.length === 1} onClick={() => props.onDraftLinesChange(props.draftLines.filter((_, itemIndex) => itemIndex !== index))} type="button">
+                  Supprimer
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <div className="purchase-lines-totals">
+          <span>HT avant remise <strong>{formatEuro(draftTotals.total_ht_before_discount)}</strong></span>
+          <span>Remise <strong>{formatEuro(draftTotals.discount_amount)}</strong></span>
+          <span>Total HT <strong>{formatEuro(draftTotals.total_ht)}</strong></span>
+          <span>Total TVA <strong>{formatEuro(draftTotals.total_vat)}</strong></span>
+          <span>Total TTC <strong>{formatEuro(draftTotals.total_ttc)}</strong></span>
+        </div>
+        <button className="primary-button" form="customer-invoice-form" type="submit">Créer la facture</button>
+      </section>
       <div className="table-card">
         <table>
           <thead><tr><th>Numero</th><th>Date</th><th>Client</th><th>Statut</th><th>HT</th><th>TVA</th><th>TTC</th><th>Actions</th></tr></thead>
