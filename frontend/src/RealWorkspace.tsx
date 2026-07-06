@@ -314,6 +314,7 @@ const emptyQuoteDocument = {
 
 const emptyInvoiceLine = {
   articleId: "",
+  newArticleName: "",
   description: "",
   quantity: "1",
   unitPriceHt: "",
@@ -1902,6 +1903,41 @@ export function RealWorkspace({
     await loadData();
   }
 
+  async function ensureLineArticleId(line: InvoiceLineDraft) {
+    if (line.articleId) {
+      return line.articleId;
+    }
+
+    const articleName = line.newArticleName.trim();
+
+    if (!articleName) {
+      return null;
+    }
+
+    const existingArticle = articles.find((article) => article.name.toLowerCase() === articleName.toLowerCase());
+
+    if (existingArticle) {
+      return existingArticle.id;
+    }
+
+    const { data, error: insertError } = await supabase.from("articles").insert({
+      user_id: currentCompanyUserId,
+      reference: null,
+      name: articleName,
+      description: line.description.trim() || null,
+      unit_price_ht: Number(line.unitPriceHt || 0),
+      vat_rate: Number(line.vatRate)
+    }).select("id").single();
+
+    if (insertError || !data) {
+      setError(displaySupabaseError(insertError?.message ?? "Impossible de creer l'article."));
+      return null;
+    }
+
+    setNotice(`Article "${articleName}" cree. N'oubliez pas de completer sa fiche dans le menu Articles.`);
+    return data.id as string;
+  }
+
   async function createInvoice(table: "sales" | "purchases", form: typeof emptyInvoice) {
     const amounts = table === "sales"
       ? calculateSaleAmounts(form.amountHt, form.vatRate, form.discountType, form.discountValue)
@@ -2472,13 +2508,12 @@ export function RealWorkspace({
     event.preventDefault();
     let invoiceNumber = "";
     const validLines = invoiceDraftLines.filter((line) =>
-      line.description.trim() &&
       isPositiveInteger(line.quantity) &&
       parseDecimalInput(line.unitPriceHt) > 0
     );
 
     if (validLines.length === 0 || validLines.length !== invoiceDraftLines.length) {
-      setError("Chaque ligne de facture client doit avoir une description, une quantite entiere et un prix HT superieur a 0.");
+      setError("Chaque ligne de facture client doit avoir une quantite entiere et un prix HT superieur a 0.");
       return;
     }
 
@@ -2486,6 +2521,18 @@ export function RealWorkspace({
 
     if (!clientId) {
       return;
+    }
+
+    const lineArticleIds: Array<string | null> = [];
+
+    for (const line of invoiceDraftLines) {
+      const articleId = await ensureLineArticleId(line);
+
+      if (line.newArticleName.trim() && !articleId) {
+        return;
+      }
+
+      lineArticleIds.push(articleId);
     }
 
     const totals = summarizeInvoiceLineDrafts(invoiceDraftLines, invoiceDocumentForm.discountType, invoiceDocumentForm.discountValue);
@@ -2514,14 +2561,16 @@ export function RealWorkspace({
       return;
     }
 
-    const lines = invoiceDraftLines.map((line) => {
+    const preparedLines = [];
+
+    for (const [index, line] of invoiceDraftLines.entries()) {
       const amounts = calculateLineAmounts(line.quantity, line.unitPriceHt, line.vatRate, line.discountType, line.discountValue);
 
-      return {
+      preparedLines.push({
         invoice_id: data.id,
         user_id: currentCompanyUserId,
-        article_id: line.articleId || null,
-        description: line.description.trim(),
+        article_id: lineArticleIds[index],
+        description: line.description.trim() || line.newArticleName.trim() || "Ligne facture",
         quantity: Number(line.quantity),
         unit_price_ht: Number(line.unitPriceHt),
         discount_type: line.discountType,
@@ -2530,9 +2579,10 @@ export function RealWorkspace({
         line_ht: amounts.amount_ht,
         line_vat: amounts.vat_amount,
         line_ttc: amounts.amount_ttc
-      };
-    });
-    const { error: linesError } = await supabase.from("invoice_lines").insert(lines);
+      });
+    }
+
+    const { error: linesError } = await supabase.from("invoice_lines").insert(preparedLines);
 
     if (linesError) {
       setError(displaySupabaseError(linesError.message));
@@ -2628,11 +2678,17 @@ export function RealWorkspace({
       invoiceLineForm.discountType,
       invoiceLineForm.discountValue
     );
+    const articleId = await ensureLineArticleId(invoiceLineForm);
+
+    if (invoiceLineForm.newArticleName.trim() && !articleId) {
+      return;
+    }
+
     const { error: insertError } = await supabase.from("invoice_lines").insert({
       invoice_id: selectedInvoiceId,
       user_id: currentCompanyUserId,
-      article_id: invoiceLineForm.articleId || null,
-      description: invoiceLineForm.description,
+      article_id: articleId,
+      description: invoiceLineForm.description.trim() || invoiceLineForm.newArticleName.trim() || "Ligne facture",
       quantity: Number(invoiceLineForm.quantity),
       unit_price_ht: Number(invoiceLineForm.unitPriceHt),
       discount_type: invoiceLineForm.discountType,
@@ -3656,6 +3712,11 @@ function ArticlesPage(props: {
 }) {
   const [showImportHelp, setShowImportHelp] = useState(false);
 
+  function articleCompleteness(row: Article) {
+    const fields = [row.reference, row.name, row.description, row.unit_price_ht, row.vat_rate];
+    return Math.round((fields.filter((value) => String(value ?? "").trim()).length / fields.length) * 100);
+  }
+
   function exportRows() {
     downloadCsv(
       "articles-kobance.csv",
@@ -3730,23 +3791,32 @@ function ArticlesPage(props: {
       </div>
       <div className="table-card">
         <table>
-          <thead><tr><th>Reference</th><th>Nom</th><th>Description</th><th>Prix HT</th><th>TVA</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Reference</th><th>Nom</th><th>Description</th><th>Prix HT</th><th>TVA</th><th>Fiche</th><th>Actions</th></tr></thead>
           <tbody>
-            {props.rows.map((row) => (
-              <tr key={row.id}>
-                <td>{row.reference}</td>
-                <td>{row.name}</td>
-                <td>{row.description}</td>
-                <td>{formatEuro(row.unit_price_ht)}</td>
-                <td>{Number(row.vat_rate).toLocaleString("fr-FR")} %</td>
-                <td>
-                  <div className="row-actions">
-                    <button className="link-button" onClick={() => props.onEdit(row)} type="button">Modifier</button>
-                    <button className="danger-button" onClick={() => props.onDelete(row.id)} type="button">Supprimer</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {props.rows.map((row) => {
+              const completeness = articleCompleteness(row);
+              return (
+                <tr key={row.id}>
+                  <td>{row.reference}</td>
+                  <td>{row.name}</td>
+                  <td>{row.description}</td>
+                  <td>{formatEuro(row.unit_price_ht)}</td>
+                  <td>{Number(row.vat_rate).toLocaleString("fr-FR")} %</td>
+                  <td>
+                    <div className="completion-cell">
+                      <progress max="100" value={completeness} />
+                      <span>{completeness} %</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="row-actions">
+                      <button className="link-button" onClick={() => props.onEdit(row)} type="button">Modifier</button>
+                      <button className="danger-button" onClick={() => props.onDelete(row.id)} type="button">Supprimer</button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -3822,6 +3892,7 @@ function InvoicesPage(props: {
                     props.onDraftLinesChange(props.draftLines.map((item, itemIndex) => itemIndex === index ? {
                       ...item,
                       articleId: event.target.value,
+                      newArticleName: "",
                       description: article?.description || article?.name || item.description,
                       unitPriceHt: article ? String(article.unit_price_ht) : item.unitPriceHt,
                       vatRate: article ? String(article.vat_rate) : item.vatRate
@@ -3833,7 +3904,8 @@ function InvoicesPage(props: {
                     <option key={article.id} value={article.id}>{article.reference ? `${article.reference} - ` : ""}{article.name}</option>
                   ))}
                 </select>
-                <input placeholder="Description" value={line.description} onChange={(event) => props.onDraftLinesChange(props.draftLines.map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item))} />
+                <input disabled={Boolean(line.articleId)} placeholder="Nouvel article" value={line.newArticleName} onChange={(event) => props.onDraftLinesChange(props.draftLines.map((item, itemIndex) => itemIndex === index ? { ...item, newArticleName: event.target.value } : item))} />
+                <input placeholder="Description (facultatif)" value={line.description} onChange={(event) => props.onDraftLinesChange(props.draftLines.map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item))} />
                 <input inputMode="numeric" min="1" pattern="[1-9][0-9]*" placeholder="Qte" step="1" type="number" value={line.quantity} onChange={(event) => props.onDraftLinesChange(props.draftLines.map((item, itemIndex) => itemIndex === index ? { ...item, quantity: event.target.value } : item))} />
                 <input min="0" placeholder="PU HT" step="0.01" type="number" value={line.unitPriceHt} onChange={(event) => props.onDraftLinesChange(props.draftLines.map((item, itemIndex) => itemIndex === index ? { ...item, unitPriceHt: event.target.value } : item))} />
                 <select value={line.vatRate} onChange={(event) => props.onDraftLinesChange(props.draftLines.map((item, itemIndex) => itemIndex === index ? { ...item, vatRate: event.target.value } : item))}>
@@ -3918,6 +3990,7 @@ function InvoicesPage(props: {
                 props.onLineChange({
                   ...props.lineForm,
                   articleId: event.target.value,
+                  newArticleName: "",
                   description: article?.description || article?.name || props.lineForm.description,
                   unitPriceHt: article ? String(article.unit_price_ht) : props.lineForm.unitPriceHt,
                   vatRate: article ? String(article.vat_rate) : props.lineForm.vatRate
@@ -3929,7 +4002,8 @@ function InvoicesPage(props: {
                 <option key={article.id} value={article.id}>{article.reference ? `${article.reference} - ` : ""}{article.name}</option>
               ))}
             </select>
-            <input required placeholder="Description" value={props.lineForm.description} onChange={(event) => props.onLineChange({ ...props.lineForm, description: event.target.value })} />
+            <input disabled={Boolean(props.lineForm.articleId)} placeholder="Nouvel article" value={props.lineForm.newArticleName} onChange={(event) => props.onLineChange({ ...props.lineForm, newArticleName: event.target.value })} />
+            <input placeholder="Description (facultatif)" value={props.lineForm.description} onChange={(event) => props.onLineChange({ ...props.lineForm, description: event.target.value })} />
             <input inputMode="numeric" min="1" pattern="[1-9][0-9]*" required step="1" title="Quantite entiere uniquement : 1, 2, 3..." type="number" value={props.lineForm.quantity} onChange={(event) => props.onLineChange({ ...props.lineForm, quantity: event.target.value })} />
             <input min="0" required placeholder="Prix unitaire HT" step="0.01" type="number" value={props.lineForm.unitPriceHt} onChange={(event) => props.onLineChange({ ...props.lineForm, unitPriceHt: event.target.value })} />
             <select value={props.lineForm.vatRate} onChange={(event) => props.onLineChange({ ...props.lineForm, vatRate: event.target.value })}>
